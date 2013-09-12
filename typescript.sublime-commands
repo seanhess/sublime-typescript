@@ -1,0 +1,6 @@
+[
+    {
+        "caption": "Typescript: Check Errors",
+        "command": "typescript_check",
+    }
+]
