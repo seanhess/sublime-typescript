@@ -1,4 +1,2 @@
-lib/*.js
-src/*.js
-core/settings.py
 *.pyc
+typescript-tools

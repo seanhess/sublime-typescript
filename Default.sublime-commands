@@ -2,5 +2,9 @@
     {
         "caption": "Typescript: Check Errors",
         "command": "typescript_check",
+    },
+    {
+        "caption": "Typescript: Start",
+        "command": "typescript_start",
     }
 ]
