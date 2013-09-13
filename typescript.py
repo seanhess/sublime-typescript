@@ -99,9 +99,10 @@ class TypescriptService(object):
 
     def on_errors(self, error_infos):
         print("infos", error_infos)
-        errors = list(map(lambda e: Error(e), error_infos))
+        self.errors = list(map(lambda e: Error(e), error_infos))
         if (self.delegate):
-            self.delegate.on_typescript_errors(errors)
+            self.delegate.on_typescript_errors(self.errors)
+
 
 
     def add_file(self, view):
@@ -280,13 +281,26 @@ def render_errors(view, errors):
     regions = list(map(lambda e: error_region(view, e), matching_errors))
     view.add_regions('typescript-error', regions, 'invalid', 'cross', sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE | sublime.DRAW_SOLID_UNDERLINE)
 
+def render_error_status(view, errors):
+    sel = view.sel()
+    (line, col) = view.rowcol(sel[0].begin())
+    line_error = find_error(errors, line, view.file_name())
+    if line_error:
+        view.set_status("typescript", line_error.text)    
+    else:
+        view.erase_status("typescript")
+
 
 def error_region(view, error):
     a = view.text_point(error.start.line-1, error.start.character-1)
     b = view.text_point(error.end.line-1, error.end.character-1)
     return sublime.Region(a, b)
 
-
+def find_error(errors, line, file):
+    for error in errors:
+        if error.file == file and (line+1 >= error.start.line and line+1 <= error.end.line):
+            return error
+    return None
 
 
 class TypescriptEventListener(EventListener):
@@ -332,8 +346,9 @@ class TypescriptEventListener(EventListener):
             render_errors(self.currentView, errors)
         
     # # called a lot when selecting, AND each character
-    # def on_selection_modified_async(self, view):
-    #     print("on_selection_modified_async")        
+    def on_selection_modified_async(self, view):
+        render_error_status(view, service.errors)
+
 
     # def on_post_save_async(self,view):
     #     print("on_post_save_async")
