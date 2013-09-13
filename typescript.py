@@ -62,6 +62,9 @@ class TypescriptService(object):
 
     # naw, this is a bad idea
 
+    def is_initialized(self):
+        return self.process != None
+
     def initialize(self, root_file_path):
         # can only initialize once
         print("initialize", os.path.join(os.path.dirname(__file__),'nothing.ts'))
@@ -80,14 +83,17 @@ class TypescriptService(object):
 
     # Only allow you to start once for now?
     def start(self, file_path):
+        return
         self.initialize(file_path)
+
 
     def on_loaded(self, message):
         self.loaded = True
+        self.check_errors()
         if (self.delegate):
             self.delegate.on_typescript_loaded()
 
-    def checkErrors(self):
+    def check_errors(self):
         self.writer.add('showErrors')
         self.reader.next_data(self.on_errors)
 
@@ -97,12 +103,21 @@ class TypescriptService(object):
         if (self.delegate):
             self.delegate.on_typescript_errors(errors)
 
-    def updateFile(self, view, cb):
+
+    def add_file(self, view):
+        print("add_file", view.file_name())
+        if (self.is_initialized()):
+            self.update_file(view)
+        else:
+            self.initialize(view.file_name())
+
+    # automatically runs checkerrors
+    def update_file(self, view):
         (lineCount, col) = view.rowcol(view.size())
         content = view.substr(sublime.Region(0, view.size()))
         self.writer.add('update nocheck {0} {1}'.format(str(lineCount+1),view.file_name().replace('\\','/')))
         self.writer.add(content)
-        self.reader.next_message(lambda m: cb())
+        self.reader.next_message(lambda m: self.check_errors())
 
         # Ok, so you need to WAIT, until the last command is finished to do another
 
@@ -110,7 +125,7 @@ class TypescriptService(object):
     #     print("UPDATED FILE", line)
 
     #     # self.process_read(self.process)
-    #     # self.checkErrors()
+    #     # self.check_errors()
 
     # def queue_is_running(self):
     #     return self.currentAction
@@ -236,7 +251,7 @@ class TypescriptStartCommand(TextCommand):
         self.display_errors(errors)
 
     def on_typescript_loaded(self):
-        service.checkErrors()        
+        service.check_errors()        
 
     def display_errors(self,errors):
         self.view.set_status("typescript", "Typescript [%s ERRORS]" % len(errors))
@@ -280,10 +295,11 @@ class TypescriptEventListener(EventListener):
 
     # called whenever a veiw is focused
     def on_activated_async(self,view):
-        self.loaded = "loaded baby"
         print("on_activated_async", service, view.file_name())
         if isTypescript(view): 
             self.currentView = view
+            service.delegate = self
+            service.add_file(view)
         else:
             self.currentView = None
         # if it is a typescript file, and we aren't loaded, run LOAD synchronously. Just burn through it fast
@@ -298,6 +314,8 @@ class TypescriptEventListener(EventListener):
         print("on_load_async")
 
 
+    def on_typescript_loaded(self):
+        print("loaded")
 
     # # called on each character sent
     def on_modified_async(self, view):
@@ -305,7 +323,7 @@ class TypescriptEventListener(EventListener):
         if (isTypescript(view)):
             print("gogogo", view.file_name())
             self.currentView = view
-            service.updateFile(view, lambda: service.checkErrors())
+            service.update_file(view)
             service.delegate = self
         # print("on_modified_async")
 
