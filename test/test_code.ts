@@ -1,5 +1,6 @@
 declare var document;
 declare var alert;
+
 module Foo {
 	var testing = ""; 
 }
@@ -17,6 +18,7 @@ class C1 {
 
 var f = new C1();
 f.pubMeth(); // test on F.
+f.asdfMeth();
 
 module M {
     export class C { 

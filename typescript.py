@@ -151,14 +151,13 @@ class TypescriptStartCommand(TextCommand):
     def on_typescript_loaded(self):
         print("LOADED!")
 
-
     def display_errors(self,errors):
         self.view.set_status("typescript", "Typescript [%s ERRORS]" % len(errors))
+        render_errors(self.view, errors)
 
     def wait_for_load(self, service, i=0, dir=1):
-        if (service.loaded):
-            self.display_errors(service.errors)
-        else:
+        # self.display_errors(service.errors)
+        if not service.loaded:
             before = i % 8
             after = (7) - before
             if not after:
@@ -170,6 +169,20 @@ class TypescriptStartCommand(TextCommand):
             sublime.set_timeout(lambda: self.wait_for_load(service, i, dir), 100)
 
 
+
+
+def render_errors(view, errors):
+    file = view.file_name()
+    print("RENDER_ERRORS", file)
+    matching_errors = [e for e in errors if e.file == file]
+    regions = list(map(lambda e: error_region(view, e), matching_errors))
+    view.add_regions('typescript-error', regions, 'invalid', 'cross', sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE | sublime.DRAW_SOLID_UNDERLINE)
+
+
+def error_region(view, error):
+    a = view.text_point(error.start.line-1, error.start.character-1)
+    b = view.text_point(error.end.line-1, error.end.character-1)
+    return sublime.Region(a, b)
 
 
 class TypescriptCheckCommand(TextCommand):
