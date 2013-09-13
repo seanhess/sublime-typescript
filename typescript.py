@@ -5,6 +5,7 @@ from sublime_plugin import EventListener
 from subprocess import Popen, PIPE
 from queue import Queue
 from threading import Thread
+import time
 import os
 from functools import partial
 import json
@@ -15,7 +16,7 @@ TSS_PATH =  os.path.join(os.path.dirname(__file__),'bin','tss.js')
 # As soon as you load something like that... 
 # Simple commands: mark errors in the current file
 
-
+ 
 # STEPS: 
 # (1) get tss into the repo
 # (2) when first typescript loaded
@@ -42,102 +43,189 @@ TSS_PATH =  os.path.join(os.path.dirname(__file__),'bin','tss.js')
 # Also: just have it load regularly, and ask the LOCAL version of the errors, no?
 # so... I keep track of the project errors locally, totally parsed. 
 
-class Error(object):
-    file = None
-    start = None
-    end = None
-    text = None
-    phase = None
-    category = None
-    def __init__(self, dict):
-        self.file = dict['file']
-        self.start = ErrorPosition(dict['start'])
-        self.end = ErrorPosition(dict['end'])
-        self.text = dict['text']
-        self.phase = dict['phase']
-        self.category = dict['category']
 
-class ErrorPosition(object):
-    line = 0
-    character = 0
-    def __init__(self, dict):
-        self.line = dict['line']
-        self.character = dict['character']
 
 class TypescriptService(object):
     
     process = None
     errors = []
-    thread = None
     queue = None
     delegate = None
     loaded = False
+    reader = None
+    writer = None
 
-    def reset(self):
-        if (self.process): self.process.kill()
-        if (self.queue): self.queue_empty()
-        self.queue = Queue()
-        self.thread = Thread(target=partial(self.queue_run))
-        self.thread.daemon = True
-        self.thread.start()
+    root_view = None
 
-    # forces the loading of the typescript service at this point
-    # unloads any project already loaded
-    # if you can't find a project, just load every file, no?
-    # if you CAN find a project, then use the active one?
-    # only ever have one process
-    def start(self, file_path):
-        print("START: ", file_path)
-        self.reset()
+    # you CAN'T break this down. Keep it open always
+    # If you want to add another file, do something different.
+
+    # naw, this is a bad idea
+
+    def initialize(self, root_file_path):
+        # can only initialize once
+        print("initialize", os.path.join(os.path.dirname(__file__),'nothing.ts'))
+
+        self.loaded = False        
+
         kwargs = {}
-        self.loaded = False
-        self.process = Popen(["/usr/local/bin/node", TSS_PATH, file_path], stdin=PIPE, stdout=PIPE, stderr=PIPE, **kwargs)
+        self.process = Popen(["/usr/local/bin/node", TSS_PATH, root_file_path], stdin=PIPE, stdout=PIPE, stderr=PIPE, **kwargs)
+        self.writer = ToolsWriter(self.process.stdin)
+        self.writer.start()
 
-    def queue_add(self, method):
-        self.queue.put(method)
-        
+        # but it's still kind of like... subscribe to the NEXT one
+        self.reader = ToolsReader(self.process.stdout)
+        self.reader.next_message(self.on_loaded)
+        self.reader.start()
+
+    # Only allow you to start once for now?
+    def start(self, file_path):
+        self.initialize(file_path)
+
+    def on_loaded(self, message):
+        self.loaded = True
+        if (self.delegate):
+            self.delegate.on_typescript_loaded()
+
     def checkErrors(self):
-        self.process_write(self.process, 'showErrors')
-        infos = self.process_read(self.process)
-        errors = list(map(lambda e: Error(e), infos))
+        self.writer.add('showErrors')
+        self.reader.next_data(self.on_errors)
+
+    def on_errors(self, error_infos):
+        print("infos", error_infos)
+        errors = list(map(lambda e: Error(e), error_infos))
         if (self.delegate):
             self.delegate.on_typescript_errors(errors)
 
-    def queue_run(self):
-        item = self.queue.get() # BLOCKING!
-        print("RUN", item)
-        item()
-        self.queue.task_done()
-        self.queue_run()
+    def updateFile(self, view, cb):
+        (lineCount, col) = view.rowcol(view.size())
+        content = view.substr(sublime.Region(0, view.size()))
+        self.writer.add('update nocheck {0} {1}'.format(str(lineCount+1),view.file_name().replace('\\','/')))
+        self.writer.add(content)
+        self.reader.next_message(lambda m: cb())
 
-    # empties the whole queue
-    def queue_empty(self):
-        if (self.queue.empty()): return
-        self.queue.get(False)
-        self.queue_empty()
+        # Ok, so you need to WAIT, until the last command is finished to do another
 
-    def process_read(self, process):
-        line = process.stdout.readline().decode('UTF-8')
-        print("TSS: ", line)
-        if line.startswith('"loaded'):
-            self.loaded = True
-            if (self.delegate):
-                self.delegate.on_typescript_loaded()
-            return self.process_read(process)
-        else:
-            return json.loads(line)
+    #     line = self.process_read(self.process)
+    #     print("UPDATED FILE", line)
 
-    def process_write(self, process, command):
-        process.stdin.write(bytes(command+'\n','UTF-8'))
+    #     # self.process_read(self.process)
+    #     # self.checkErrors()
+
+    # def queue_is_running(self):
+    #     return self.currentAction
+
+    # def queue_run(self):
+    #     # so if it is stopped
+    #     # if self.queue_is_running(): return
+    #     self.thread = Thread(target=partial(self.queue_next))
+    #     self.thread.daemon = True
+    #     self.thread.start()
+
+    # # don't block, just start and stop depending on what is happening
+    # # keep running items until it is empty again, then stop
+    # def queue_next(self):
+    #     # if self.queue.empty(): return
+    #     item = self.queue.get() # BLOCKING
+    #     print("RUN", item)
+    #     item()
+    #     self.queue.task_done()
+    #     self.queue_next()
+
+    # # empties the whole queue
+    # def queue_empty(self):
+    #     if (self.queue.empty()): return
+    #     self.queue.get(False)
+    #     self.queue_empty()
+
+    # def process_read(self, process):
+    #     line = process.stdout.readline().decode('UTF-8')
+    #     print("<<< ", line)
+    #     if line.startswith('"loaded'):
+    #         self.loaded = True
+    #         if (self.delegate):
+    #             self.delegate.on_typescript_loaded()
+    #         return self.process_read(process)
+    #     # elif line.startswith('"updated'):
+    #     #     return self.process_read(process)
+    #     else:
+    #         return json.loads(line)
+
+    # def process_write(self, process, command):
+    #     print(">>> " + command)
+    #     process.stdin.write(bytes(command+'\n','UTF-8'))
 
 
+
+
+
+
+
+class ToolsWriter(Thread):
+
+    queue = Queue()
+
+    def __init__(self, stdin):
+        Thread.__init__(self)
+        self.stdin = stdin        
+        self.daemon = True
+
+    def add(self, message):
+        self.queue.put(message)
+
+    def run(self):
+        for command in iter(self.queue.get, None):
+            print("TOOLS (write)", command[:100])
+            self.stdin.write(bytes(command+'\n','UTF-8'))
+        self.stdin.close()
+
+class ToolsReader(Thread):
+
+    on_data = None
+    on_message = None
+
+    def __init__(self, stdout):
+        Thread.__init__(self)
+        self.stdout = stdout
+        self.daemon = True
+
+    def next_data(self, handler):
+        self.on_data = handler
+
+    def next_message(self, handler):
+        self.on_message = handler
+
+    def run(self):
+        for line in iter(self.stdout.readline, b''):
+            line = line.decode('UTF-8')
+            print("TOOLS (read)", line)            
+            data = json.loads(line)
+            if line.startswith('"'):
+                if self.on_message:
+                    self.on_message(data)
+                    self.on_message = None    
+                else:
+                    print(" -- no handler")
+
+            elif self.on_data:
+                self.on_data(data)
+                self.on_data = None
+
+        self.stdout.close()
+
+
+
+
+# I need a new model for this!!!
+# 1. update, code
+# 2. wait for updated message
+# 3. 
 
 # loads the file in its own process
 # does some AMAZING stuff
 class TypescriptStartCommand(TextCommand):
     def run(self, edit):
         service.start(self.view.file_name())
-        service.queue_add(service.checkErrors)
         service.delegate = self
         self.wait_for_load(service)
 
@@ -145,11 +233,10 @@ class TypescriptStartCommand(TextCommand):
         return isTypescript(self.view)
 
     def on_typescript_errors(self, errors):
-        print("ERRORS!", errors)
         self.display_errors(errors)
 
     def on_typescript_loaded(self):
-        print("LOADED!")
+        service.checkErrors()        
 
     def display_errors(self,errors):
         self.view.set_status("typescript", "Typescript [%s ERRORS]" % len(errors))
@@ -173,7 +260,7 @@ class TypescriptStartCommand(TextCommand):
 
 def render_errors(view, errors):
     file = view.file_name()
-    print("RENDER_ERRORS", file)
+    print("RENDER_ERRORS", len(errors), file)
     matching_errors = [e for e in errors if e.file == file]
     regions = list(map(lambda e: error_region(view, e), matching_errors))
     view.add_regions('typescript-error', regions, 'invalid', 'cross', sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE | sublime.DRAW_SOLID_UNDERLINE)
@@ -185,21 +272,20 @@ def error_region(view, error):
     return sublime.Region(a, b)
 
 
-class TypescriptCheckCommand(TextCommand):
-    def is_enabled(self):
-        return isTypescript(self.view)
-
-    def run(self, edit):
-        print("Typescript check", edit)
-
 
 
 class TypescriptEventListener(EventListener):
+
+    currentView = None
 
     # called whenever a veiw is focused
     def on_activated_async(self,view):
         self.loaded = "loaded baby"
         print("on_activated_async", service, view.file_name())
+        if isTypescript(view): 
+            self.currentView = view
+        else:
+            self.currentView = None
         # if it is a typescript file, and we aren't loaded, run LOAD synchronously. Just burn through it fast
 
     def on_clone_async(self,view):
@@ -211,9 +297,21 @@ class TypescriptEventListener(EventListener):
     def on_load_async(self, view):
         print("on_load_async")
 
+
+
     # # called on each character sent
-    # def on_modified_async(self, view):
-    #     print("on_modified_async")
+    def on_modified_async(self, view):
+        # print("ON MODIFIED")
+        if (isTypescript(view)):
+            print("gogogo", view.file_name())
+            self.currentView = view
+            service.updateFile(view, lambda: service.checkErrors())
+            service.delegate = self
+        # print("on_modified_async")
+
+    def on_typescript_errors(self, errors):
+        if self.currentView:
+            render_errors(self.currentView, errors)
         
     # # called a lot when selecting, AND each character
     # def on_selection_modified_async(self, view):
@@ -257,3 +355,26 @@ def plugin_loaded():
     settings = sublime.load_settings('typescript.sublime-settings')
     print("TS Loaded", settings)
     # sublime.set_timeout(lambda:init(sublime.active_window().active_view()), 300)
+
+
+class Error(object):
+    file = None
+    start = None
+    end = None
+    text = None
+    phase = None
+    category = None
+    def __init__(self, dict):
+        self.file = dict['file']
+        self.start = ErrorPosition(dict['start'])
+        self.end = ErrorPosition(dict['end'])
+        self.text = dict['text']
+        self.phase = dict['phase']
+        self.category = dict['category']
+
+class ErrorPosition(object):
+    line = 0
+    character = 0
+    def __init__(self, dict):
+        self.line = dict['line']
+        self.character = dict['character']    
