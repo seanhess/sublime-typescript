@@ -1,51 +1,53 @@
 import sublime
-from sublime_plugin import WindowCommand
+# from sublime_plugin import WindowCommand
 from sublime_plugin import TextCommand
 from sublime_plugin import EventListener
 from subprocess import Popen, PIPE
 from queue import Queue
 from threading import Thread
-import time
 import os
-from functools import partial
 import json
 
-TSS_PATH =  os.path.join(os.path.dirname(__file__),'bin','tss.js')
 
-# NOTE: we need to load the whole project! Search for every file in the whole project and load it in to the plugin, no?
-# As soon as you load something like that... 
-# Simple commands: mark errors in the current file
+TSS_PATH = os.path.join(os.path.dirname(__file__),'bin', 'tss.js')
+
+
+# you don't actually have to update the file when you switch tabs...
+# only if it hasn't been loaded yet, right?
+
+class TypescriptProjectManager(object):
+
+    services = {}
+
+    # returns an initializes a project given a certain view
+    def service(self, view):
+        window_id = str(view.window().id())
+        if window_id in self.services:
+            return self.services[window_id]
+
+        service = TypescriptToolService(window_id)
+
+        file = view.settings().get("typescript_root")
+        if file:
+            project_file = view.window().project_file_name()
+            file_path = os.path.join(os.path.dirname(project_file), file)
+            # TODO save that file_path somewhere for building
+            service.initialize(file_path)
+
+        self.services[window_id] = service
+        return service
+
+        # if it specifies a root file, use that
+
+
+
 
  
-# STEPS: 
-# (1) get tss into the repo
-# (2) when first typescript loaded
-    # (z) print a message, and never do it again
-    # (a) load tss process
-    # (b) feed it all the typescript info in the whole project
-
-# oh, but it should be per-project, right? 
-# depends on how it works :)
-
-# ok, I know how this works, now I just need to figure out what the . 
-
-# typescript service needs to be PER FILE
-
-# OR, I could make a global. yeah.
-
-# do we REALLY want to load it like that?
-# well... I don't know. 
-# I would rather it run reliably and slow
-
-# PROBLEM: should use the typescript version of the local repository, no? (Almost impossible)
-# just use the latest version. (Or publish version branches)
-
-# Also: just have it load regularly, and ask the LOCAL version of the errors, no?
-# so... I keep track of the project errors locally, totally parsed. 
 
 
+projects = TypescriptProjectManager()
 
-class TypescriptService(object):
+class TypescriptToolService(object):
     
     process = None
     errors = []
@@ -55,29 +57,25 @@ class TypescriptService(object):
     reader = None
     writer = None
 
-    root_view = None
-
-    # you CAN'T break this down. Keep it open always
-    # If you want to add another file, do something different.
-
-    # naw, this is a bad idea
+    def __init__(self, service_id):
+        self.service_id = service_id
 
     def is_initialized(self):
         return self.process != None
 
     def initialize(self, root_file_path):
         # can only initialize once
-        print("initialize", os.path.join(os.path.dirname(__file__),'nothing.ts'))
+        print("initialize", root_file_path)
 
         self.loaded = False        
 
         kwargs = {}
         self.process = Popen(["/usr/local/bin/node", TSS_PATH, root_file_path], stdin=PIPE, stdout=PIPE, stderr=PIPE, **kwargs)
-        self.writer = ToolsWriter(self.process.stdin)
+        self.writer = ToolsWriter(self.process.stdin, self.service_id)
         self.writer.start()
 
         # but it's still kind of like... subscribe to the NEXT one
-        self.reader = ToolsReader(self.process.stdout)
+        self.reader = ToolsReader(self.process.stdout, self.service_id)
         self.reader.next_message(self.on_loaded)
         self.reader.start()
 
@@ -98,16 +96,13 @@ class TypescriptService(object):
         self.reader.next_data(self.on_errors)
 
     def on_errors(self, error_infos):
-        print("infos", error_infos)
         self.errors = list(map(lambda e: Error(e), error_infos))
         if (self.delegate):
             self.delegate.on_typescript_errors(self.errors)
 
-
-
     def add_file(self, view):
         print("add_file", view.file_name())
-        if (self.is_initialized()):
+        if (self.is_initialized() and self.loaded):
             self.update_file(view)
         else:
             self.initialize(view.file_name())
@@ -120,60 +115,13 @@ class TypescriptService(object):
         self.writer.add(content)
         self.reader.next_message(lambda m: self.check_errors())
 
-        # Ok, so you need to WAIT, until the last command is finished to do another
+    def list_files(self):
+        self.writer.add('files')
+        self.reader.next_data(self.on_list_files)
 
-    #     line = self.process_read(self.process)
-    #     print("UPDATED FILE", line)
-
-    #     # self.process_read(self.process)
-    #     # self.check_errors()
-
-    # def queue_is_running(self):
-    #     return self.currentAction
-
-    # def queue_run(self):
-    #     # so if it is stopped
-    #     # if self.queue_is_running(): return
-    #     self.thread = Thread(target=partial(self.queue_next))
-    #     self.thread.daemon = True
-    #     self.thread.start()
-
-    # # don't block, just start and stop depending on what is happening
-    # # keep running items until it is empty again, then stop
-    # def queue_next(self):
-    #     # if self.queue.empty(): return
-    #     item = self.queue.get() # BLOCKING
-    #     print("RUN", item)
-    #     item()
-    #     self.queue.task_done()
-    #     self.queue_next()
-
-    # # empties the whole queue
-    # def queue_empty(self):
-    #     if (self.queue.empty()): return
-    #     self.queue.get(False)
-    #     self.queue_empty()
-
-    # def process_read(self, process):
-    #     line = process.stdout.readline().decode('UTF-8')
-    #     print("<<< ", line)
-    #     if line.startswith('"loaded'):
-    #         self.loaded = True
-    #         if (self.delegate):
-    #             self.delegate.on_typescript_loaded()
-    #         return self.process_read(process)
-    #     # elif line.startswith('"updated'):
-    #     #     return self.process_read(process)
-    #     else:
-    #         return json.loads(line)
-
-    # def process_write(self, process, command):
-    #     print(">>> " + command)
-    #     process.stdin.write(bytes(command+'\n','UTF-8'))
-
-
-
-
+    def on_list_files(self, files):
+        if self.delegate:
+            self.delegate.on_typescript_files(files)
 
 
 
@@ -181,17 +129,18 @@ class ToolsWriter(Thread):
 
     queue = Queue()
 
-    def __init__(self, stdin):
+    def __init__(self, stdin, service_id):
         Thread.__init__(self)
         self.stdin = stdin        
         self.daemon = True
+        self.service_id = service_id
 
     def add(self, message):
         self.queue.put(message)
 
     def run(self):
         for command in iter(self.queue.get, None):
-            print("TOOLS (write)", command[:100])
+            print("TOOLS-" + self.service_id + " (write)", command.splitlines()[0])            
             self.stdin.write(bytes(command+'\n','UTF-8'))
         self.stdin.close()
 
@@ -200,10 +149,11 @@ class ToolsReader(Thread):
     on_data = None
     on_message = None
 
-    def __init__(self, stdout):
+    def __init__(self, stdout, service_id):
         Thread.__init__(self)
         self.stdout = stdout
         self.daemon = True
+        self.service_id = service_id
 
     def next_data(self, handler):
         self.on_data = handler
@@ -214,7 +164,7 @@ class ToolsReader(Thread):
     def run(self):
         for line in iter(self.stdout.readline, b''):
             line = line.decode('UTF-8')
-            print("TOOLS (read)", line)            
+            print("TOOLS-" + self.service_id + " (read)", line.splitlines()[0])            
             data = json.loads(line)
             if line.startswith('"'):
                 if self.on_message:
@@ -232,6 +182,8 @@ class ToolsReader(Thread):
 
 
 
+
+
 # I need a new model for this!!!
 # 1. update, code
 # 2. wait for updated message
@@ -241,6 +193,7 @@ class ToolsReader(Thread):
 # does some AMAZING stuff
 class TypescriptStartCommand(TextCommand):
     def run(self, edit):
+        service = projects.service(self.view)
         service.start(self.view.file_name())
         service.delegate = self
         self.wait_for_load(service)
@@ -252,6 +205,7 @@ class TypescriptStartCommand(TextCommand):
         self.display_errors(errors)
 
     def on_typescript_loaded(self):
+        service = projects.service(self.view)
         service.check_errors()        
 
     def display_errors(self,errors):
@@ -303,19 +257,49 @@ def find_error(errors, line, file):
     return None
 
 
+
+# shows the currently indexed files (mostly for debugging, but you could use it to jump to ONLY typescript files if you wanted
+class TypescriptShowFilesCommand(TextCommand):
+
+    files = None
+
+    def run(self, edit):
+        service = projects.service(self.view)
+        service.delegate = self
+        service.list_files()
+
+    def on_typescript_files(self, files):
+        # ignore the files added by tss.js
+        bin_path = os.path.join("sublime-typescript", "bin")
+        self.files = [file for file in files if not bin_path in file]
+        items = list(map(lambda f: [os.path.basename(f), os.path.dirname(f)], self.files))
+        sublime.active_window().show_quick_panel(items, self.on_select_panel_item)
+
+    def on_select_panel_item(self, index):
+        if index < 0: return
+        file = self.files[index]
+        sublime.active_window().open_file(file)
+
+
+
+
+
+
 class TypescriptEventListener(EventListener):
 
     currentView = None
 
     # called whenever a veiw is focused
     def on_activated_async(self,view):
-        print("on_activated_async", service, view.file_name())
-        if isTypescript(view): 
-            self.currentView = view
-            service.delegate = self
-            service.add_file(view)
-        else:
+        print("on_activated_async", view.file_name())
+        if not isTypescript(view): 
             self.currentView = None
+            return
+        
+        self.currentView = view
+        service = projects.service(view)
+        service.delegate = self
+        service.add_file(view)
         # if it is a typescript file, and we aren't loaded, run LOAD synchronously. Just burn through it fast
 
     def on_clone_async(self,view):
@@ -329,16 +313,16 @@ class TypescriptEventListener(EventListener):
 
 
     def on_typescript_loaded(self):
-        print("loaded")
+        return
 
     # # called on each character sent
     def on_modified_async(self, view):
-        # print("ON MODIFIED")
-        if (isTypescript(view)):
-            print("gogogo", view.file_name())
-            self.currentView = view
-            service.update_file(view)
-            service.delegate = self
+        if not isTypescript(view): return
+
+        self.currentView = view
+        service = projects.service(view)
+        service.update_file(view)
+        service.delegate = self
         # print("on_modified_async")
 
     def on_typescript_errors(self, errors):
@@ -347,6 +331,9 @@ class TypescriptEventListener(EventListener):
         
     # # called a lot when selecting, AND each character
     def on_selection_modified_async(self, view):
+        if not isTypescript(view): return
+
+        service = projects.service(view)
         render_error_status(view, service.errors)
 
 
@@ -377,7 +364,6 @@ class TypescriptEventListener(EventListener):
     #         view = sublime.active_window().active_view()
     #         return is_ts(view)        
 
-service = TypescriptService()
 
 def isTypescript(view=None):
     if view is None:
