@@ -17,7 +17,8 @@ TSS_PATH = os.path.join(os.path.dirname(__file__),'bin', 'tss.js')
 
 class TypescriptProjectManager(object):
 
-    services = {}
+    def __init__(self):
+        self.services = {}
 
     # returns an initializes a project given a certain view
     def service(self, view):
@@ -49,23 +50,17 @@ projects = TypescriptProjectManager()
 
 class TypescriptToolService(object):
     
-    process = None
-    errors = []
-    queue = None
-    delegate = None
-    loaded = False
-    reader = None
-    writer = None
-
     def __init__(self, service_id):
+        print("TypescriptToolService()", service_id)
         self.service_id = service_id
+        self.process = None
 
     def is_initialized(self):
         return self.process != None
 
     def initialize(self, root_file_path):
         # can only initialize once
-        print("initialize", root_file_path)
+        print("initialize", self.service_id, root_file_path)
 
         self.loaded = False        
 
@@ -79,19 +74,21 @@ class TypescriptToolService(object):
         self.reader.next_message(self.on_loaded)
         self.reader.start()
 
-    # Only allow you to start once for now?
+    # Only allow you to start once for now? 
     def start(self, file_path):
         return
         self.initialize(file_path)
 
 
     def on_loaded(self, message):
+        print("on_loaded", self.service_id)
         self.loaded = True
         self.check_errors()
         if (self.delegate):
             self.delegate.on_typescript_loaded()
 
     def check_errors(self):
+        print("check_errors", self.service_id, self.writer.service_id)
         self.writer.add('showErrors')
         self.reader.next_data(self.on_errors)
 
@@ -101,9 +98,10 @@ class TypescriptToolService(object):
             self.delegate.on_typescript_errors(self.errors)
 
     def add_file(self, view):
-        print("add_file", view.file_name())
-        if (self.is_initialized() and self.loaded):
-            self.update_file(view)
+        print("add_file", self.service_id, view.file_name())
+        if (self.is_initialized()):
+            if (self.loaded):
+                self.update_file(view)
         else:
             self.initialize(view.file_name())
 
@@ -111,6 +109,7 @@ class TypescriptToolService(object):
     def update_file(self, view):
         (lineCount, col) = view.rowcol(view.size())
         content = view.substr(sublime.Region(0, view.size()))
+        print("update_file", self.service_id, view.file_name())
         self.writer.add('update nocheck {0} {1}'.format(str(lineCount+1),view.file_name().replace('\\','/')))
         self.writer.add(content)
         self.reader.next_message(lambda m: self.check_errors())
@@ -127,13 +126,12 @@ class TypescriptToolService(object):
 
 class ToolsWriter(Thread):
 
-    queue = Queue()
-
     def __init__(self, stdin, service_id):
         Thread.__init__(self)
         self.stdin = stdin        
         self.daemon = True
         self.service_id = service_id
+        self.queue = Queue()
 
     def add(self, message):
         self.queue.put(message)
@@ -145,9 +143,6 @@ class ToolsWriter(Thread):
         self.stdin.close()
 
 class ToolsReader(Thread):
-
-    on_data = None
-    on_message = None
 
     def __init__(self, stdout, service_id):
         Thread.__init__(self)
@@ -182,48 +177,39 @@ class ToolsReader(Thread):
 
 
 
+# class TypescriptStartCommand(TextCommand):
+#     def run(self, edit):
+#         service = projects.service(self.view)
+#         service.start(self.view.file_name())
+#         service.delegate = self
+#         self.wait_for_load(service)
 
+#     def is_enabled(self):
+#         return isTypescript(self.view)
 
-# I need a new model for this!!!
-# 1. update, code
-# 2. wait for updated message
-# 3. 
+#     def on_typescript_errors(self, errors):
+#         self.display_errors(errors)
 
-# loads the file in its own process
-# does some AMAZING stuff
-class TypescriptStartCommand(TextCommand):
-    def run(self, edit):
-        service = projects.service(self.view)
-        service.start(self.view.file_name())
-        service.delegate = self
-        self.wait_for_load(service)
+#     def on_typescript_loaded(self):
+#         service = projects.service(self.view)
+#         service.check_errors()        
 
-    def is_enabled(self):
-        return isTypescript(self.view)
+#     def display_errors(self,errors):
+#         self.view.set_status("typescript", "Typescript [%s ERRORS]" % len(errors))
+#         render_errors(self.view, errors)
 
-    def on_typescript_errors(self, errors):
-        self.display_errors(errors)
-
-    def on_typescript_loaded(self):
-        service = projects.service(self.view)
-        service.check_errors()        
-
-    def display_errors(self,errors):
-        self.view.set_status("typescript", "Typescript [%s ERRORS]" % len(errors))
-        render_errors(self.view, errors)
-
-    def wait_for_load(self, service, i=0, dir=1):
-        # self.display_errors(service.errors)
-        if not service.loaded:
-            before = i % 8
-            after = (7) - before
-            if not after:
-                dir = -1
-            if not before:
-                dir = 1
-            i += dir
-            self.view.set_status("typescript", 'Typescript Loading [%s=%s]' % (' ' *before, ' '*after))
-            sublime.set_timeout(lambda: self.wait_for_load(service, i, dir), 100)
+#     def wait_for_load(self, service, i=0, dir=1):
+#         # self.display_errors(service.errors)
+#         if not service.loaded:
+#             before = i % 8
+#             after = (7) - before
+#             if not after:
+#                 dir = -1
+#             if not before:
+#                 dir = 1
+#             i += dir
+#             self.view.set_status("typescript", 'Typescript Loading [%s=%s]' % (' ' *before, ' '*after))
+#             sublime.set_timeout(lambda: self.wait_for_load(service, i, dir), 100)
 
 
 
@@ -261,8 +247,6 @@ def find_error(errors, line, file):
 # shows the currently indexed files (mostly for debugging, but you could use it to jump to ONLY typescript files if you wanted
 class TypescriptShowFilesCommand(TextCommand):
 
-    files = None
-
     def run(self, edit):
         service = projects.service(self.view)
         service.delegate = self
@@ -287,8 +271,6 @@ class TypescriptShowFilesCommand(TextCommand):
 
 class TypescriptEventListener(EventListener):
 
-    currentView = None
-
     # called whenever a veiw is focused
     def on_activated_async(self,view):
         print("on_activated_async", view.file_name())
@@ -298,6 +280,7 @@ class TypescriptEventListener(EventListener):
         
         self.currentView = view
         service = projects.service(view)
+        print(" - service", service.service_id)
         service.delegate = self
         service.add_file(view)
         # if it is a typescript file, and we aren't loaded, run LOAD synchronously. Just burn through it fast
@@ -377,12 +360,6 @@ def plugin_loaded():
 
 
 class Error(object):
-    file = None
-    start = None
-    end = None
-    text = None
-    phase = None
-    category = None
     def __init__(self, dict):
         self.file = dict['file']
         self.start = ErrorPosition(dict['start'])
@@ -392,8 +369,6 @@ class Error(object):
         self.category = dict['category']
 
 class ErrorPosition(object):
-    line = 0
-    character = 0
     def __init__(self, dict):
         self.line = dict['line']
         self.character = dict['character']    

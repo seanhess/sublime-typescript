@@ -1,13 +1,5 @@
 [
     {
-        "caption": "Typescript: Check Errors",
-        "command": "typescript_check",
-    },
-    {
-        "caption": "Typescript: Start",
-        "command": "typescript_start",
-    },
-    {
         "caption": "Typescript: Show Indexed Files",
         "command": "typescript_show_files",
     }
