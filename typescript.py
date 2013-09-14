@@ -7,6 +7,7 @@ from queue import Queue
 from threading import Thread
 import os
 import json
+import time
 
 
 TSS_PATH = os.path.join(os.path.dirname(__file__),'bin', 'tss.js')
@@ -51,7 +52,7 @@ projects = TypescriptProjectManager()
 class TypescriptToolService(object):
     
     def __init__(self, service_id):
-        print("TypescriptToolService()", service_id)
+        # print("TypescriptToolService()", service_id)
         self.service_id = service_id
         self.process = None
 
@@ -60,7 +61,7 @@ class TypescriptToolService(object):
 
     def initialize(self, root_file_path):
         # can only initialize once
-        print("initialize", self.service_id, root_file_path)
+        # print("initialize", self.service_id, root_file_path)
 
         self.loaded = False        
 
@@ -81,14 +82,14 @@ class TypescriptToolService(object):
 
 
     def on_loaded(self, message):
-        print("on_loaded", self.service_id)
+        # print("on_loaded", self.service_id)
         self.loaded = True
         self.check_errors()
         if (self.delegate):
             self.delegate.on_typescript_loaded()
 
     def check_errors(self):
-        print("check_errors", self.service_id, self.writer.service_id)
+        # print("check_errors", self.service_id, self.writer.service_id)
         self.writer.add('showErrors')
         self.reader.next_data(self.on_errors)
 
@@ -98,7 +99,7 @@ class TypescriptToolService(object):
             self.delegate.on_typescript_errors(self.errors)
 
     def add_file(self, view):
-        print("add_file", self.service_id, view.file_name())
+        # print("add_file", self.service_id, view.file_name())
         if (self.is_initialized()):
             if (self.loaded):
                 self.update_file(view)
@@ -109,7 +110,7 @@ class TypescriptToolService(object):
     def update_file(self, view):
         (lineCount, col) = view.rowcol(view.size())
         content = view.substr(sublime.Region(0, view.size()))
-        print("update_file", self.service_id, view.file_name())
+        # print("update_file", self.service_id, view.file_name())
         self.writer.add('update nocheck {0} {1}'.format(str(lineCount+1),view.file_name().replace('\\','/')))
         self.writer.add(content)
         self.reader.next_message(lambda m: self.check_errors())
@@ -216,7 +217,7 @@ class ToolsReader(Thread):
 
 def render_errors(view, errors):
     file = view.file_name()
-    print("RENDER_ERRORS", len(errors), file)
+    # print("RENDER_ERRORS", len(errors), file)
     matching_errors = [e for e in errors if e.file == file]
     regions = list(map(lambda e: error_region(view, e), matching_errors))
     view.add_regions('typescript-error', regions, 'invalid', 'cross', sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE | sublime.DRAW_SOLID_UNDERLINE)
@@ -271,28 +272,36 @@ class TypescriptShowFilesCommand(TextCommand):
 
 class TypescriptEventListener(EventListener):
 
+    DIRTY_DELAY = 300
+
+    def __init__(self):
+        self.view_modified_time = 0
+
     # called whenever a veiw is focused
     def on_activated_async(self,view):
-        print("on_activated_async", view.file_name())
+        # print("on_activated_async", view.file_name())
         if not isTypescript(view): 
-            self.currentView = None
+            self.current_view = None
             return
         
-        self.currentView = view
+        self.current_view = view
         service = projects.service(view)
-        print(" - service", service.service_id)
+        # print(" - service", service.service_id)
         service.delegate = self
         service.add_file(view)
         # if it is a typescript file, and we aren't loaded, run LOAD synchronously. Just burn through it fast
 
     def on_clone_async(self,view):
-        print("on_clone_async")
+        return
+        # print("on_clone_async")
 
     def init_view(self,view):
-        print("init_view")
+        return
+        # print("init_view")
 
     def on_load_async(self, view):
-        print("on_load_async")
+        return
+        # print("on_load_async")
 
 
     def on_typescript_loaded(self):
@@ -301,16 +310,27 @@ class TypescriptEventListener(EventListener):
     # # called on each character sent
     def on_modified_async(self, view):
         if not isTypescript(view): return
-
-        self.currentView = view
-        service = projects.service(view)
-        service.update_file(view)
-        service.delegate = self
+        self.mark_view_dirty(view)
         # print("on_modified_async")
 
+    def mark_view_dirty(self, view):
+        dirty_time = time.time()
+        # print("mark_view_dirty", dirty_time)        
+        self.current_view = view
+        self.view_modified_time = dirty_time
+        # in delay milliseconds, check to see if the view has been changed... again
+        # only run update_file if it hasn't been called again since
+        sublime.set_timeout(lambda: self.check_update_file(dirty_time), self.DIRTY_DELAY)
+
+    def check_update_file(self, dirty_time):
+        if self.view_modified_time == dirty_time:        
+            service = projects.service(self.current_view)
+            service.update_file(self.current_view)
+            service.delegate = self
+
     def on_typescript_errors(self, errors):
-        if self.currentView:
-            render_errors(self.currentView, errors)
+        if self.current_view:
+            render_errors(self.current_view, errors)
         
     # # called a lot when selecting, AND each character
     def on_selection_modified_async(self, view):
