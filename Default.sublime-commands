@@ -2,5 +2,12 @@
     {
         "caption": "Typescript: Show Indexed Files",
         "command": "typescript_show_files",
-    }
+    },
+    {
+        "command": "typescript_complete",
+        "caption": "Typescript: Autocomplete",
+        "args": {"characters": "."},
+        "keys": ["."],
+        "context": [ {"key": "typescript"} ]
+    },    
 ]

@@ -1,4 +1,12 @@
 {
+    // These settings override base settings, and are also readable
 	"extensions": ["ts", "str"],
-    "auto_complete": false
+
+    // Should I force enable this or not??
+    "auto_complete": true,
+    "auto_complete_triggers": [ {"selector": "source.ts", "characters": "."} ],
+
+    // there is an auto_complete_delay! I can use this!
+    // gives me time to fix it :)
+    // "auto_complete_delay": 50,
 }
