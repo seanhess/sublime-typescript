@@ -4,7 +4,13 @@
         "command": "typescript_show_files",
     },
     {
-        "caption": "Typescript: Reset",
-        "command": "typescript_reset",
-    }
+        "caption": "Typescript: Start Here",
+        "command": "typescript_start",
+    },
+    {
+        "caption": "Typescript: Complete",
+        "command": "typescript_complete",
+        "args": {"characters": ""},
+    },
+
 ]

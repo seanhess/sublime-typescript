@@ -1,65 +1,27 @@
-WARNING
--------
-
-In Development. 
-
-
-
-
-
 Sublime-Typescript
 ==================
 
-A Sublime Text plugin for the Typescript language 
+A Sublime Text plugin for the Typescript language.
+
+Features
+--------
+
+- Inline error highlighting as you type
+- Autocompletion
 
 Installation
 ------------
 
-You need to have node.js installed before anything.
-
-Clone the repository in your sublime "Packages" directory. 
-You also need to ensure that the node executable is on your path, or that the "node_path" key is set somewhere in a
-typescript.sublime-settings settings file that sublime text can reach.
-
+1. Install [Node.JS](http://nodejs.org/)
+2. Clone the repository in your sublime "Packages" directory. 
 ~~~sh
-git clone https://github.com/raph-amiard/sublime-typescript
+cd ~/Library/Application Support/Sublime Text 3/Packages
+git clone https://github.com/seanhess/sublime-typescript
 ~~~
+3. Make sure you set `auto_complete: true`, either in your global settings or typescript.sublime-settings
 
-After that you're set and you can use the plugin !
-First run might take long to set up, and it will need an internet connection, because the plugin is actually :
-- Getting the typescript sources online.
-- Compiling it's JS part the first time you will use it.
+Issues and Questions
+--------------------
 
-After that you can use the plugin offline. 
-If you don't have an internet connection, getting typescript sources and putting them in the lib/typescript directory will work too.
-
-Usage
------
-
-For the moment the functionnality is very basic :
-- Errors get highlighted and the errors messages shows in the status bar
-- Autocompletion works (quite well thanks to the TypeScript language service)
-
-![Autocompletion feature screenshot](http://i.imgur.com/UR1kn.png)
-
-### Settings
-
-All the settings discussed here can be set either in the typescript.sublime-settings file of the plugin folder, or in your own typescript.sublime-settings, as is usual with sublime text configuration
-
-#### Node path
-
-If node isn't on your path, or you want to set the node executable path manually, you can set the "node_path" key to refer to the node executable path, **including the executable name**.
-
-~~~json
-{
-    "node_path":"/my/path/to/node/node"
-}
-~~~
-
-### Projects
-
-By default, a new instance of the plugin server is created for every file.
-The TypeScript language service has an odd behaviour, as in, every file you add to the service will be considered to
-be in the same compilation unit as the others.
-If you want to specify to the plugin that some files are part of the same project, put a .sublimets file in the folder.
-If you don't do that, every file will be opened in a separate plugin instance
+- Autocomplete is finicky if set to false
+- It does not follow references except on the first file, run the `Typescript: Start Here` command to reload on the current file 
