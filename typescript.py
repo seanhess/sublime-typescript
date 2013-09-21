@@ -4,7 +4,7 @@ from sublime_plugin import TextCommand
 from sublime_plugin import EventListener
 from subprocess import Popen, PIPE
 from queue import Queue
-from threading import Thread
+from threading import Thread, Timer
 import os
 import json
 import time
@@ -53,18 +53,20 @@ class TypescriptProjectManager(object):
 projects = TypescriptProjectManager()
 
 class TypescriptToolService(object):
+
+    ERRORS_DELAY = 0.3
     
     def __init__(self, service_id):
         # print("TypescriptToolService()", service_id)
         self.service_id = service_id
-        self.process = None
         self.errors = []
         self.loaded = False
         self.completions = []
         self.tools = None
+        self.errors_timer = None
 
     def is_initialized(self):
-        return self.process != None
+        return self.tools != None
 
     def initialize(self, root_file_path):
         # can only initialize once
@@ -72,9 +74,8 @@ class TypescriptToolService(object):
         self.loaded = False        
 
         # kwargs = {}
-        # self.process = Popen(["/usr/local/bin/node", TSS_PATH, root_file_path], stdin=PIPE, stdout=PIPE, stderr=PIPE, **kwargs)
-        self.tools = ToolsBridgeNow(self.service_id)
-        self.tools.connect(root_file_path)
+        self.tools = ToolsBridge(self.service_id)
+        self.tools.connect(root_file_path, self.on_loaded)
 
 
     # Only allow you to start once for now? 
@@ -86,13 +87,19 @@ class TypescriptToolService(object):
     def on_loaded(self, message):
         # print("on_loaded", self.service_id)
         self.loaded = True
-        self.check_errors()
+        # self.check_errors()
         if (self.delegate):
             self.delegate.on_typescript_loaded()
 
+    def check_errors_delay(self):
+        # print("check_errors_delay")
+        if self.errors_timer: 
+            self.errors_timer.cancel()
+        self.errors_timer = Timer(self.ERRORS_DELAY, self.check_errors)
+        self.errors_timer.start()
+
     def check_errors(self):
-        return
-        # print("check_errors", self.service_id, self.writer.service_id)
+        # print("check_errors", self.service_id)
         self.tools.add('showErrors', self.on_errors)
 
     def on_errors(self, error_infos):
@@ -106,22 +113,24 @@ class TypescriptToolService(object):
         if (self.is_initialized()):
             if (self.loaded):
                 self.update_file(view)
-                self.check_errors()
 
         else:
             self.initialize(view.file_name())
-            self.check_errors()
 
     # automatically runs checkerrors
     def update_file(self, view):
+        # print("update_file", self.service_id, view.file_name())
+        
         (lineCount, col) = view.rowcol(view.size())
         content = view.substr(sublime.Region(0, view.size()))
-        print("update_file", self.service_id, view.file_name())
-        # write these immediately
         
         self.tools.write('update nocheck {0} {1}'.format(str(lineCount+1),view.file_name().replace('\\','/')))
         self.tools.write(content)
-        message = self.tools.read()
+        self.tools.read(self.on_updated) # updated
+
+    def on_updated(self, message):
+        # print("UPDATED", message)
+        return
 
     def list_files(self):
         self.writer.add('files')
@@ -132,161 +141,110 @@ class TypescriptToolService(object):
             self.delegate.on_typescript_files(files)
 
 
-    def load_completions(self, is_member, line, pos, file):
-        member_out = str(is_member).lower()
-        self.tools.write('completions {0} {1} {2} {3}'.format(member_out, str(line+1), str(pos+1), file))
-        complete_data = self.tools.read()
-        # print("Read! ", complete_data)
-        self.on_completions(complete_data)
+    # def load_completions(self, is_member, line, pos, file):
+    #     member_out = str(is_member).lower()
+    #     self.tools.write('completions {0} {1} {2} {3}'.format(member_out, str(line+1), str(pos+1), file))
+    #     complete_data = self.tools.read()
+    #     # print("Read! ", complete_data)
+    #     self.on_completions(complete_data)
 
-    def on_completions(self, data):
-        if data and 'entries' in data:
-            entries = data['entries']
-            print("COMPLETIONS", entries)
-            self.completions = list(map(lambda c: Completion(c), data['entries']))
-        else:
-            print("!!! Completions")
+    # def on_completions(self, data):
+    #     if data and 'entries' in data:
+    #         entries = data['entries']
+    #         print("COMPLETIONS", entries)
+    #         self.completions = list(map(lambda c: Completion(c), data['entries']))
+    #     else:
+    #         print("!!! Completions")
 
  
 
 
 
 
-class ToolsBridgeNow(object):
+
+
+
+
+
+class ToolsBridge(object):
+    
     def __init__(self, service_id):
         self.service_id = service_id
         self.process = None
 
-    def connect(self, root_file_path):
+    def connect(self, root_file_path, on_loaded):
         kwargs = {}
-        self.process = Popen(["/usr/local/bin/node", TSS_PATH, root_file_path], stdin=PIPE, stdout=PIPE, stderr=PIPE, **kwargs)
-        self.stdin = self.process.stdin
-        self.stdout = self.process.stdout
-        loaded = self.read() # swallow the loaded response
-        print("LOADED")
+        process = Popen(["/usr/local/bin/node", TSS_PATH, root_file_path], stdin=PIPE, stdout=PIPE, stderr=PIPE, **kwargs)
+        self.process = process
 
-    def write(self, command):
-        print("TOOLS-" + self.service_id + " (write)", command.partition("\n")[0])            
+        self.writer = ToolsWriter(process.stdin, self.service_id)
+        self.writer.start()
+
+        self.reader = ToolsReader(process.stdout, self.service_id)
+        self.reader.add(on_loaded) # need to consume the "loaded" response
+        self.reader.start()
+
+    def add(self, message, on_data):
+        self.writer.add(message)
+        self.reader.add(on_data)
+        # you want to do it synchronously, no?
+        # hmm... 
+
+    def write(self, message):
+        self.writer.add(message)
+
+    def read(self, on_data):
+        self.reader.add(on_data)
+ 
+
+class ToolsWriter(Thread):
+
+    def __init__(self, stdin, service_id):
+        Thread.__init__(self)
+        self.stdin = stdin        
+        self.daemon = True
+        self.service_id = service_id
+        self.queue = Queue()
+
+    def add(self, message):
+        self.queue.put(message)
+
+    def write_sync(self, command):
+        # print("TOOLS-" + self.service_id + " (write)", command.partition("\n")[0])            
         self.stdin.write(bytes(command+'\n','UTF-8'))
 
-    def read(self):
+    def run(self):
+        for command in iter(self.queue.get, None):
+            self.write_sync(command)
+        self.stdin.close()
+
+class ToolsReader(Thread):
+
+    # have an ARRAY of handlers, one should get called per line, or you throw an error
+
+    def __init__(self, stdout, service_id):
+        Thread.__init__(self)
+        self.stdout = stdout
+        self.daemon = True
+        self.service_id = service_id
+        self.line_handlers = Queue() 
+
+    def add(self, handler):
+        self.line_handlers.put(handler, False) # don't block
+
+    def read_sync(self):
         line = self.stdout.readline().decode('UTF-8')
-        print("TOOLS-" + self.service_id + " (read)", line.partition("\n")[0])            
+        # print("TOOLS-" + self.service_id + " (read)", line.partition("\n")[0])            
         data = json.loads(line)
-        return data        
+        return data
 
+    def run(self):
+        for data in iter(self.read_sync, b''):
+            on_data = self.line_handlers.get(False) # don't block
+            on_data(data)
 
+        self.stdout.close()
 
-
-
-
-
-
-
-
-# class ToolsBridge(object):
-    
-#     def __init__(self, service_id):
-#         self.service_id = service_id
-
-#     def connect(self, process, on_loaded):
-#         self.writer = ToolsWriter(process.stdin, self.service_id)
-#         self.writer.start()
-
-#         self.reader = ToolsReader(process.stdout, self.service_id)
-#         self.reader.add(on_loaded) # need to consume the "loaded" response
-#         self.reader.start()
-
-#     def add(self, message, on_data):
-#         self.writer.add(message)
-#         self.reader.add(on_data)
-#         # you want to do it synchronously, no?
-#         # hmm... 
-
-
-# class ToolsWriter(Thread):
-
-#     def __init__(self, stdin, service_id):
-#         Thread.__init__(self)
-#         self.stdin = stdin        
-#         self.daemon = True
-#         self.service_id = service_id
-#         self.queue = Queue()
-
-#     def add(self, message):
-#         self.queue.put(message)
-
-#     def write_sync(self, command):
-#         print("TOOLS-" + self.service_id + " (write)", command.partition("\n")[0])            
-#         self.stdin.write(bytes(command+'\n','UTF-8'))
-
-#     def run(self):
-#         for command in iter(self.queue.get, None):
-#             self.write_sync(command)
-#         self.stdin.close()
-
-# class ToolsReader(Thread):
-
-#     # have an ARRAY of handlers, one should get called per line, or you throw an error
-
-#     def __init__(self, stdout, service_id):
-#         Thread.__init__(self)
-#         self.stdout = stdout
-#         self.daemon = True
-#         self.service_id = service_id
-#         self.line_handlers = Queue() 
-
-#     def add(self, handler):
-#         self.line_handlers.put(handler, False) # don't block
-
-#     def read_sync(self):
-#         line = self.stdout.readline().decode('UTF-8')
-#         print("TOOLS-" + self.service_id + " (read)", line.partition("\n")[0])            
-#         data = json.loads(line)
-#         return data
-
-#     def run(self):
-#         for data in iter(self.read_sync, b''):
-#             on_data = self.line_handlers.get(False) # don't block
-#             on_data(data)
-
-#         self.stdout.close()
-
-
-
-# class TypescriptStartCommand(TextCommand):
-#     def run(self, edit):
-#         service = projects.service(self.view)
-#         service.start(self.view.file_name())
-#         service.delegate = self
-#         self.wait_for_load(service)
-
-#     def is_enabled(self):
-#         return isTypescript(self.view)
-
-#     def on_typescript_errors(self, errors):
-#         self.display_errors(errors)
-
-#     def on_typescript_loaded(self):
-#         service = projects.service(self.view)
-#         service.check_errors()        
-
-#     def display_errors(self,errors):
-#         self.view.set_status("typescript", "Typescript [%s ERRORS]" % len(errors))
-#         render_errors(self.view, errors)
-
-#     def wait_for_load(self, service, i=0, dir=1):
-#         # self.display_errors(service.errors)
-#         if not service.loaded:
-#             before = i % 8
-#             after = (7) - before
-#             if not after:
-#                 dir = -1
-#             if not before:
-#                 dir = 1
-#             i += dir
-#             self.view.set_status("typescript", 'Typescript Loading [%s=%s]' % (' ' *before, ' '*after))
-#             sublime.set_timeout(lambda: self.wait_for_load(service, i, dir), 100)
 
 
 
@@ -358,8 +316,6 @@ class TypescriptShowFilesCommand(TextCommand):
 
 class TypescriptEventListener(EventListener):
 
-    DIRTY_DELAY = 300
-
     def __init__(self):
         self.view_modified_time = 0
 
@@ -375,6 +331,7 @@ class TypescriptEventListener(EventListener):
         # print(" - service", service.service_id)
         service.delegate = self
         service.add_file(view)
+        service.check_errors()
         # if it is a typescript file, and we aren't loaded, run LOAD synchronously. Just burn through it fast
 
     def on_clone_async(self,view):
@@ -398,31 +355,13 @@ class TypescriptEventListener(EventListener):
         if not is_typescript(view): return
         # self.mark_view_dirty(view)
 
+        # immediately update
         service = projects.service(self.current_view)
-        service.update_file(self.current_view)
         service.delegate = self
-
-
-        # load auto completions too
-        # service = projects.service(view)
-
-        # print("on_modified_async")
-
-    def mark_view_dirty(self, view):
-        dirty_time = time.time()
-        # print("mark_view_dirty", dirty_time)        
-        self.current_view = view
-        self.view_modified_time = dirty_time
-        # in delay milliseconds, check to see if the view has been changed... again
-        # only run update_file if it hasn't been called again since
-        sublime.set_timeout(lambda: self.check_update_file(dirty_time), self.DIRTY_DELAY)
-
-    def check_update_file(self, dirty_time):
-        if self.view_modified_time == dirty_time:        
-            service = projects.service(self.current_view)
-            # service.update_file(self.current_view)
-            service.check_errors()
-            service.delegate = self
+ 
+        service.update_file(self.current_view)
+        service.check_errors_delay()
+        
 
     def on_typescript_errors(self, errors):
         if self.current_view:
@@ -435,34 +374,29 @@ class TypescriptEventListener(EventListener):
         service = projects.service(view)
         render_error_status(view, service.errors)
 
-
     # def on_post_save_async(self,view):
     #     print("on_post_save_async")
 
 
-    # def handle_timeout(self,view):
-    #     self.pending = self.pending -1
-    #     if self.pending == 0:
-    #         TSS.errors(view)
+    # def on_query_completions(self, view, prefix, locations):
+    #     if not is_typescript(view): return
+    #     return
 
-    def on_query_completions(self, view, prefix, locations):
-        if not is_typescript(view): return
+    #     service = projects.service(view)
 
-        service = projects.service(view)
+    #     pos = view.sel()[0].begin()
+    #     (line, col) = view.rowcol(pos)
+    #     is_member = True        
+    #     service.load_completions(is_member, line, col, view.file_name())
+    #     entries = service.completions
+    #     print("QUERY COMPLETIONS", entries)
+    #     completions = list(map(self.entry_completion, entries))
 
-        pos = view.sel()[0].begin()
-        (line, col) = view.rowcol(pos)
-        is_member = True        
-        service.load_completions(is_member, line, col, view.file_name())
-        entries = service.completions
-        print("QUERY COMPLETIONS", entries)
-        completions = list(map(self.entry_completion, entries))
+    #     return completions
 
-        return completions
-
-    def entry_completion(self, entry):
-        # [{"name":"fullName","kind":"function","kindModifiers":"export","type":"(first: string, last: string): string","fullSymbolName":"File.fullName","docComment":""}],"prefix":"ful"}
-        return (entry.name, entry.name)
+    # def entry_completion(self, entry):
+    #     # [{"name":"fullName","kind":"function","kindModifiers":"export","type":"(first: string, last: string): string","fullSymbolName":"File.fullName","docComment":""}],"prefix":"ful"}
+    #     return (entry.name, entry.name)
                     
     # def on_query_context(self, view, key, operator, operand, match_all):
     #     if key == "typescript":
