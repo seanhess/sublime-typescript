@@ -15,10 +15,6 @@ import time
 TSS_PATH = os.path.join(os.path.dirname(__file__),'bin', 'tss.js')
 
 
-# 1. on update: update nocheck, completions, immediately
-# 2. 
-# 3. 
-
 class TypescriptProjectManager(object):
 
     def __init__(self):
@@ -42,7 +38,11 @@ class TypescriptProjectManager(object):
         self.services[window_id] = service
         return service
 
-        # if it specifies a root file, use that
+    def reset(self):
+        print("RESET")
+        for service in self.services.values():
+            service.destroy()
+        self.services = {}
 
 
 
@@ -70,7 +70,7 @@ class TypescriptToolService(object):
 
     def initialize(self, root_file_path):
         # can only initialize once
-        # print("initialize", self.service_id, root_file_path)
+        print("initialize", self.service_id, root_file_path)
         self.loaded = False        
 
         # kwargs = {}
@@ -92,14 +92,14 @@ class TypescriptToolService(object):
             self.delegate.on_typescript_loaded()
 
     def check_errors_delay(self):
-        # print("check_errors_delay")
+        print("check_errors_delay")
         if self.errors_timer: 
             self.errors_timer.cancel()
         self.errors_timer = Timer(self.ERRORS_DELAY, self.check_errors)
         self.errors_timer.start()
 
     def check_errors(self):
-        # print("check_errors", self.service_id)
+        print("check_errors")
         self.tools.add('showErrors', self.on_errors)
 
     def on_errors(self, error_infos):
@@ -108,7 +108,7 @@ class TypescriptToolService(object):
             self.delegate.on_typescript_errors(self.errors)
 
     def add_file(self, view):
-        # print("add_file", self.service_id, view.file_name())
+        print("add_file", view.file_name())
         # don't check errors here?
         if (self.is_initialized()):
             if (self.loaded):
@@ -119,27 +119,29 @@ class TypescriptToolService(object):
 
     # automatically runs checkerrors
     def update_file(self, view):
-        # print("update_file", self.service_id, view.file_name())
         
-        (lineCount, col) = view.rowcol(view.size())
         content = view.substr(sublime.Region(0, view.size()))
-        
-        self.tools.write('update nocheck {0} {1}'.format(str(lineCount+1),view.file_name().replace('\\','/')))
-        self.tools.write(content)
-        self.tools.read(self.on_updated) # updated
+        lines = content.split('\n')
+        file_name = view.file_name().replace('\\','/')
+        line_count = len(lines)
+        print("update_file", file_name, view.size(), len(lines))        
 
-    def on_updated(self, message):
+        command = 'update nocheck {0} {1}\n{2}'.format(line_count, file_name, content)
+        self.tools.add(command, self.on_updated)
+        
+    def on_updated(self, message): 
         # print("UPDATED", message)
         return
 
     def list_files(self):
-        self.writer.add('files')
-        self.reader.next_data(self.on_list_files)
-
+        self.tools.add('files', self.on_list_files)
+        
     def on_list_files(self, files):
         if self.delegate:
             self.delegate.on_typescript_files(files)
 
+    def destroy(self):
+        self.tools.stop()
 
     # def load_completions(self, is_member, line, pos, file):
     #     member_out = str(is_member).lower()
@@ -190,11 +192,14 @@ class ToolsBridge(object):
         # you want to do it synchronously, no?
         # hmm... 
 
-    def write(self, message):
-        self.writer.add(message)
+    # def write(self, message):
+    #     self.writer.add(message)
 
-    def read(self, on_data):
-        self.reader.add(on_data)
+    # def read(self, on_data):
+    #     self.reader.add(on_data)
+
+    def stop(self):
+        self.process.kill()
  
 
 class ToolsWriter(Thread):
@@ -210,7 +215,7 @@ class ToolsWriter(Thread):
         self.queue.put(message)
 
     def write_sync(self, command):
-        # print("TOOLS-" + self.service_id + " (write)", command.partition("\n")[0])            
+        print("TOOLS-{0} (write) {1} [{2}]".format(self.service_id, command.partition("\n")[0], len(command)))
         self.stdin.write(bytes(command+'\n','UTF-8'))
 
     def run(self):
@@ -234,7 +239,7 @@ class ToolsReader(Thread):
 
     def read_sync(self):
         line = self.stdout.readline().decode('UTF-8')
-        # print("TOOLS-" + self.service_id + " (read)", line.partition("\n")[0])            
+        print("TOOLS-" + self.service_id + " (read)", line.partition("\n")[0])            
         data = json.loads(line)
         return data
 
@@ -299,6 +304,10 @@ class TypescriptShowFilesCommand(TextCommand):
         file = self.files[index]
         sublime.active_window().open_file(file)
 
+# if something gets screwed up, blow things out so you can reload everything
+class TypescriptResetCommand(TextCommand):
+    def run(self, edit):
+        projects.reset()
  
 # AUTO COMPLETION
 # class TypescriptComplete(TextCommand):
@@ -321,7 +330,7 @@ class TypescriptEventListener(EventListener):
 
     # called whenever a veiw is focused
     def on_activated_async(self,view):
-        # print("on_activated_async", view.file_name())
+        print("on_activated_async", view.file_name())
         if not is_typescript(view): 
             self.current_view = None
             return
