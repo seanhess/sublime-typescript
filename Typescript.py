@@ -76,8 +76,10 @@ class TypescriptToolService(object):
         self.loaded = False
         self.completions = []
         self.tools = None
+        self.tools_sync = None
         self.errors_timer = None
         self.completions_valid = False
+        self.delegate = None
 
     def is_initialized(self):
         return self.tools != None
@@ -88,8 +90,11 @@ class TypescriptToolService(object):
         self.loaded = False        
 
         # kwargs = {}
-        self.tools = ToolsBridge(self.service_id)
-        self.tools.connect(root_file_path, self.on_loaded)
+        # self.tools = ToolsBridge(self.service_id)
+        # self.tools.connect(root_file_path, self.on_loaded)
+
+        self.tools_sync = ToolsSyncBridge(self.service_id)
+        self.tools_sync.connect(root_file_path, self.on_loaded)
 
 
     # Only allow you to start once for now? 
@@ -118,6 +123,7 @@ class TypescriptToolService(object):
         self.errors_timer.start()
 
     def check_errors(self):
+        return
         print("check_errors")
         self.tools.add('showErrors', self.on_errors)
 
@@ -147,7 +153,8 @@ class TypescriptToolService(object):
         print("update_file", file_name, view.size(), len(lines))        
 
         command = 'update nocheck {0} {1}\n{2}'.format(line_count, file_name, content)
-        self.tools.add(command, self.on_updated)
+        # self.tools.add(command, self.on_updated)
+        self.on_updated(self.tools_sync.command(command))
 
     def invalidate_completions(self):
         self.completions = []
@@ -158,7 +165,8 @@ class TypescriptToolService(object):
         return
 
     def list_files(self):
-        self.tools.add('files', self.on_list_files)
+        # self.tools.add('files', self.on_list_files)
+        self.on_list_files(self.tools_sync.command('files'))
         
     def on_list_files(self, files):
         print("FILES", files)
@@ -166,10 +174,12 @@ class TypescriptToolService(object):
             self.delegate.on_typescript_files(files)
 
     def destroy(self):
-        self.tools.stop()
+        # self.tools.stop()
+        self.tools_sync.stop()
 
     # line and pos start at 1, not 0!
     def load_completions(self, is_member, line, pos, file, on_completions):
+        return
         member_out = str(is_member).lower()
         command = "completions {0} {1} {2} {3}".format(member_out, str(line), str(pos), file)
         service = self
@@ -186,6 +196,20 @@ class TypescriptToolService(object):
 
         self.tools.add(command, on_data)
 
+    def load_completions_sync(self, is_member, line, pos, file):
+        member_out = str(is_member).lower()
+        command = "completions {0} {1} {2} {3}".format(member_out, str(line), str(pos), file)
+        data = self.tools_sync.command(command)
+
+        completions = []
+
+        if data and 'entries' in data:
+            # print("COMPLETIONS", entries)
+            completions = list(map(lambda c: Completion(c), data['entries']))
+            completions = [c for c in completions if is_completion_valid(c)]
+
+        self.completions = completions
+        return self.completions
 
     def load_completions_view(self, view, on_completions):
         pos = view.sel()[0].begin()
@@ -193,6 +217,12 @@ class TypescriptToolService(object):
         is_member = True        
         self.load_completions(is_member, line+1, col+1, view.file_name(), on_completions)
 
+    def load_completions_view_sync(self, view):
+        pos = view.sel()[0].begin()
+        (line, col) = view.rowcol(pos)
+        is_member = True        
+        completions = self.load_completions_sync(is_member, line+1, col+1, view.file_name())
+        return completions
 
 
 
@@ -200,8 +230,29 @@ class TypescriptToolService(object):
 
 
 
+class ToolsSyncBridge(object):
 
+    def __init__(self, service_id):
+        self.service_id = service_id
+        self.process = None
 
+    def connect(self, root_file_path, on_loaded):
+        kwargs = {}
+        process = Popen(["/usr/local/bin/node", TSS_PATH, root_file_path], stdin=PIPE, stdout=PIPE, stderr=PIPE, **kwargs)
+        self.process = process
+
+        # initalizing. sends "loaded"
+        line = tools_read(self.process.stdout)
+        print("LOADED", line)
+        on_loaded(line)
+
+    def command(self, command):
+        tools_write(self.process.stdin, command)
+        data = tools_read(self.process.stdout)
+        return data
+
+    def stop(self):
+        self.process.kill()
 
 
 class ToolsBridge(object):
@@ -251,13 +302,9 @@ class ToolsWriter(Thread):
     def add(self, message):
         self.queue.put(message)
 
-    def write_sync(self, command):
-        print("TOOLS-{0} (write) {1} [{2}]".format(self.service_id, command.partition("\n")[0][:200], len(command)))
-        self.stdin.write(bytes(command+'\n','UTF-8'))
-
     def run(self):
         for command in iter(self.queue.get, None):
-            self.write_sync(command)
+            tools_write(self.stdin, command)
         self.stdin.close()
 
 class ToolsReader(Thread):
@@ -275,10 +322,7 @@ class ToolsReader(Thread):
         self.line_handlers.put(handler, False) # don't block
 
     def read_sync(self):
-        line = self.stdout.readline().decode('UTF-8')
-        print("TOOLS-" + self.service_id + " (read)", line.partition("\n")[0][:200])
-        data = json.loads(line)
-        return data
+        return tools_read(self.stdout)
 
     def run(self):
         for data in iter(self.read_sync, b''):
@@ -287,6 +331,18 @@ class ToolsReader(Thread):
 
         self.stdout.close()
 
+
+
+
+def tools_write(stdin, command):
+    print("TOOLS (write) {0} [{1}]".format(command.partition("\n")[0][:200], len(command)))
+    stdin.write(bytes(command+'\n','UTF-8'))
+
+def tools_read(stdout):
+    line = stdout.readline().decode('UTF-8')
+    print("TOOLS (read)", line.partition("\n")[0][:200])
+    data = json.loads(line)
+    return data
 
 
 
@@ -606,6 +662,7 @@ class TypescriptEventListener(EventListener):
         if not is_typescript(view): return
 
         service = projects.service(view)
+        service.delegate = self        
         render_error_status(view, service.errors)
 
     # def on_post_save_async(self,view):
@@ -617,21 +674,27 @@ class TypescriptEventListener(EventListener):
 
         print("on_query_completions")
         service = projects.service(view)
+        service.delegate = self
+
+        service.update_file(view)
+        completions = service.load_completions_view_sync(view)
+        sublime_completions = list(map(completion_item, completions))
+        return (sublime_completions, sublime.INHIBIT_WORD_COMPLETIONS)
         
         # if completions is 0! Not the right way to do this!
         # should be if... if... we haven't updated them
-        if service.completions_valid:
-            print(" - render " + str(len(service.completions)))
-            completions = list(map(completion_item, service.completions))
-            return (completions)
+        # if service.completions_valid:
+        #     print(" - render " + str(len(service.completions)))
+        #     completions = list(map(completion_item, service.completions))
+        #     return (completions)
 
-        else:
-            print(" - load")
-            self.current_view = view
-            service.completions_valid = False
-            service.update_file(view)
-            service.load_completions_view(view, self.on_typescript_completions)
-            return ([], sublime.INHIBIT_WORD_COMPLETIONS | sublime.INHIBIT_EXPLICIT_COMPLETIONS)
+        # else:
+        #     print(" - load")
+        #     self.current_view = view
+        #     service.completions_valid = False
+        #     service.update_file(view)
+        #     service.load_completions_view(view, self.on_typescript_completions)
+        #     return ([], sublime.INHIBIT_WORD_COMPLETIONS | sublime.INHIBIT_EXPLICIT_COMPLETIONS)
 
 
     def on_typescript_completions(self, completions):
