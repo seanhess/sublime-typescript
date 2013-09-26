@@ -446,7 +446,13 @@ class TypescriptStartCommand(TextCommand):
 #             'next_competion_if_showing': True
 #         })
 
-# When you SAVE, do something different
+# When you SAVE, do something 
+
+
+# class TypescriptBuildClick(TextCommand):
+#     def run(self, edit):
+#         print("GOGO CHILD", self.view)
+
 
 
 class TypescriptBuild(WindowCommand):
