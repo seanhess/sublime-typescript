@@ -599,6 +599,8 @@ class TypescriptEventListener(EventListener):
 
     def __init__(self):
         self.view_modified_time = 0
+        self.timer = None
+        self.completions_delay_done = False
 
     # called whenever a veiw is focused
     def on_activated_async(self,view): 
@@ -654,6 +656,7 @@ class TypescriptEventListener(EventListener):
         # service.update_file(view)
         # service.check_errors_delay()
         service.invalidate_completions()
+        self.completions_delay_done = False
 
         # immediately check completions too?
         # service.load_completions_view(self.current_view)
@@ -675,17 +678,35 @@ class TypescriptEventListener(EventListener):
     #     print("on_post_save_async")
 
 
+
+    # debouce this, so it waits until they STOP typing to do it
+
     def on_query_completions(self, view, prefix, locations):
+        print("on_query_completions")
         if not is_typescript(view): return
+
+        self.current_view = view
 
         print("on_query_completions")
         service = projects.service(view)
         service.delegate = self
 
-        service.update_file(view)
-        completions = service.load_completions_view_sync(view)
-        sublime_completions = list(map(completion_item, completions))
-        return (sublime_completions, sublime.INHIBIT_WORD_COMPLETIONS)
+        if self.completions_delay_done:
+            service.update_file(view)
+            completions = service.load_completions_view_sync(view)
+            sublime_completions = list(map(completion_item, completions))
+            return (sublime_completions, sublime.INHIBIT_WORD_COMPLETIONS)
+
+        else:
+            self.completions_delay()
+            return ([], sublime.INHIBIT_WORD_COMPLETIONS | sublime.INHIBIT_EXPLICIT_COMPLETIONS)
+
+
+
+        # service.update_file(view)
+        # completions = service.load_completions_view_sync(view)
+        # sublime_completions = list(map(completion_item, completions))
+        # return (sublime_completions, sublime.INHIBIT_WORD_COMPLETIONS)
         
         # if completions is 0! Not the right way to do this!
         # should be if... if... we haven't updated them
@@ -702,14 +723,24 @@ class TypescriptEventListener(EventListener):
         #     service.load_completions_view(view, self.on_typescript_completions)
         #     return ([], sublime.INHIBIT_WORD_COMPLETIONS | sublime.INHIBIT_EXPLICIT_COMPLETIONS)
 
+    def completions_delay(self): 
+        self.completions_delay_done = False
+        if self.timer: 
+            self.timer.cancel()
+        self.timer = Timer(0.25, self.force_completions)
+        self.timer.start()
 
-    def on_typescript_completions(self, completions):
+    def force_completions(self):
+        self.completions_delay_done = True
         # self.current_view.run_command('hide_auto_complete')
         self.current_view.run_command('auto_complete',{
             'disable_auto_insert': True,
             'api_completions_only': True,
             'next_competion_if_showing': True
         })
+
+    def on_typescript_completions(self, completions):
+        self.force_completions()
 
     def on_post_save_async(self, view):
         if not is_typescript(view): return
