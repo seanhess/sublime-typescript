@@ -34,14 +34,23 @@ class TypescriptProjectManager(object):
 
         service = TypescriptToolService(window_id)
 
-        file = view.settings().get("typescript_root")
-        if file:
-            project_file = view.window().project_file_name()
-            file_path = os.path.join(os.path.dirname(project_file), file)
-            # TODO save that file_path somewhere for building
-            service.initialize(file_path)
+        # this isn't even currently activated
+        # file = view.settings().get("typescript_root")
+        # if file:
+        #     project_file = view.window().project_file_name()
+        #     file_path = os.path.join(os.path.dirname(project_file), file)
+        #     # TODO save that file_path somewhere for building
+        #     service.initialize(file_path)
 
         self.services[window_id] = service
+        return service
+
+    def service_by_window(self, window):
+        window_id = str(window.id())
+        if window_id in self.services:
+            return self.services[window_id]
+
+        service = TypescriptToolService(window_id)
         return service
 
     def unload(self):
@@ -88,8 +97,11 @@ class TypescriptToolService(object):
         return
         self.initialize(file_path)
 
-    def set_build_errors(self, errors):
-        self.build_errors = errors
+    def set_build_errors(self, errors): 
+        self.errors = errors
+        if (self.delegate):
+            self.delegate.on_typescript_errors(self.errors)
+
 
     def on_loaded(self, message):
         # print("on_loaded", self.service_id)
@@ -208,6 +220,7 @@ class ToolsBridge(object):
         self.reader.start()
 
     def add(self, message, on_data):
+        if not self.process: return
         self.writer.add(message)
         self.reader.add(on_data)
         # you want to do it synchronously, no?
@@ -379,11 +392,12 @@ class TypescriptStartCommand(TextCommand):
 
 class TypescriptBuild(WindowCommand):
 
-    build_errors_by_file = {}
+    
 
     def __init__(self, window):
-        print("TS BUILD BABY!")
         WindowCommand.__init__(self, window)
+        self.build_errors_by_file = {}
+        self.build_errors = []
 
         # output.set_syntax_file("Packages/Syntax/Syntax.tmLanguage")
         # output.set_syntax_file(os.path.join(os.path.dirname(__file__), "TypescriptBuild.tmLanguage"))
@@ -391,6 +405,9 @@ class TypescriptBuild(WindowCommand):
 
 
     def run(self):
+        self.build_errors_by_file = {}
+        self.build_errors = []
+
         view = self.window.active_view()
         if not view: 
             return
@@ -420,17 +437,24 @@ class TypescriptBuild(WindowCommand):
 
         extra_lines = []
         total_errors = 0
+        last_error = None
 
         self.output_create()
 
         for line in lines:
+            # print(line)
             error = self.parse_error(line)
             if error:
                 total_errors += 1
                 self.add_build_error(error)
+                last_error = error
             elif line:
+                # print("HI", line)
                 # print("EXTRA LINE BABY", error, line)
-                extra_lines.append(line)
+                if last_error:
+                    last_error.text += line + "\n"
+                else:
+                    extra_lines.append(line)
         
         project_file = window.project_file_name()
         
@@ -443,26 +467,30 @@ class TypescriptBuild(WindowCommand):
             self.output_close()
             
         else:
-            # print("OH NO", self.build_errors_by_file, extra_lines)
-            # 
             self.output_open()
 
             view.set_status("typescript", "TS ({0}) ERRORS".format(total_errors))
 
             for line in extra_lines:
-                self.output_append(line)
+                self.output_append(line + "\n")
         
             for file, errors in self.build_errors_by_file.items():
                 relative_path = os.path.relpath(file, os.path.dirname(project_file))
-                self.output_append(" ERROR {0} \n".format(relative_path))
+                self.output_append(" {0} \n".format(relative_path))
                 for error in errors:
                     self.output_append("  Line {0}: {1}\n".format(error.start.line, error.text))
-                self.output_append("\n")                    
+                self.output_append("\n")  
+
+        service = projects.service_by_window(self.window)
+        service.set_build_errors(self.build_errors)
+
+        # render_errors()                  
 
     def add_build_error(self, error):
         if not error.file in self.build_errors_by_file:
             self.build_errors_by_file[error.file] = []
         self.build_errors_by_file[error.file].append(error)
+        self.build_errors.append(error)
 
     def errors_for_file(self, file):
         if not file in self.build_errors_by_file:
@@ -508,23 +536,32 @@ class TypescriptEventListener(EventListener):
     def is_inline_enabled(self, view):
         # make the default be true
         if not view.file_name(): return False
-        is_inline_set_false = view.settings().get("typescript_inline") == False
-        # print("CHECKER isSetFalse(", is_inline_set_false, ")", view, view.file_name(), is_typescript(view))
-        return (not is_inline_set_false) and is_typescript(view)
+        return (not self.is_inline_disabled(view)) and is_typescript(view)
+
+    def is_inline_disabled(self, view):
+        is_inline_set_false = view.settings().get("typescript_inline") == False        
+        return is_inline_set_false
 
     # called whenever a veiw is focused
     def on_activated_async(self,view): 
         # print("on_activated_async", view.file_name())
-        if not self.is_inline_enabled(view): 
+        if not is_typescript(view): 
             self.current_view = None
             return
         
         self.current_view = view
         service = projects.service(view)
-        # print(" - service", service.service_id)
         service.delegate = self
-        service.add_file(view)
-        service.check_errors()
+
+        if self.is_inline_disabled(view):
+            render_errors(view, service.errors)
+
+        else:
+            service.add_file(view)
+            service.check_errors()
+
+        # print(" - service", service.service_id)
+        
         # if it is a typescript file, and we aren't loaded, run LOAD synchronously. Just burn through it fast
 
     def on_clone_async(self,view):
@@ -548,16 +585,17 @@ class TypescriptEventListener(EventListener):
 
     # # called on each character sent
     def on_modified_async(self, view):
-        if not self.is_inline_enabled(view): return
+        if not is_typescript(view): return
+
         # self.mark_view_dirty(view)
 
         # immediately update
-        service = projects.service(self.current_view)
-        service.delegate = self
- 
-        service.update_file(self.current_view)
-        service.check_errors_delay()
-        service.invalidate_completions()
+        if not self.is_inline_disabled(view):
+            service = projects.service(view)
+            service.delegate = self
+            service.update_file(view)
+            service.check_errors_delay()
+            service.invalidate_completions()
 
         # immediately check completions too?
         # service.load_completions_view(self.current_view)
@@ -701,7 +739,7 @@ class BuildError(object):
         self.text = text
 
         self.start = ErrorPosition({'line': line, 'character': col})
-        self.end = ErrorPosition({'line': line, 'character': col+1})
+        self.end = ErrorPosition({'line': line, 'character': col+3})
         
         self.phase = None
         self.category = None
