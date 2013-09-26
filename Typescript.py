@@ -352,7 +352,7 @@ def render_errors(view, errors):
     # print("RENDER_ERRORS", len(errors), file)
     matching_errors = [e for e in errors if e.file == file]
     regions = list(map(lambda e: error_region(view, e), matching_errors))
-    view.add_regions('typescript-error', regions, 'invalid', 'cross', sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE | sublime.DRAW_SOLID_UNDERLINE)
+    view.add_regions('typescript-error', regions, 'typescript.error', 'cross', sublime.DRAW_NO_FILL | sublime.DRAW_NO_OUTLINE | sublime.DRAW_SOLID_UNDERLINE)
 
 def render_error_status(view, errors):
     sel = view.sel()
@@ -519,7 +519,7 @@ class TypescriptBuild(WindowCommand):
                 # print("HI", line)
                 # print("EXTRA LINE BABY", error, line)
                 if last_error:
-                    last_error.text += line + "\n"
+                    last_error.text += "\n" + line
                 else:
                     extra_lines.append(line)
         
@@ -815,6 +815,7 @@ def relative_file_paths(window, files):
     return abs_files
 
 def project_main(view):
+    if not view.window().project_data(): return None
     return view.window().project_data()["typescript_main"]
 
 
