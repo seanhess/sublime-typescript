@@ -1,3 +1,4 @@
 *.pyc
 typescript-tools
 notes.md
+node_modules

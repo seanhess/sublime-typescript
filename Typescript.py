@@ -1,8 +1,7 @@
 import sublime
 # from sublime_plugin import WindowCommand
-from sublime_plugin import TextCommand
-from sublime_plugin import EventListener
-from subprocess import Popen, PIPE
+from sublime_plugin import TextCommand, EventListener, WindowCommand
+from subprocess import Popen, PIPE, STDOUT
 from queue import Queue
 from threading import Thread, Timer
 import os
@@ -16,7 +15,9 @@ import re
 
 # http://www.eladyarkoni.com/2012/09/sublime-text-auto-complete-plugin.html
 
-TSS_PATH = os.path.join(os.path.dirname(__file__),'bin', 'tss.js')
+BIN_PATH = os.path.join(os.path.dirname(__file__), 'bin')
+TSS_PATH = os.path.join(BIN_PATH, 'tss.js')
+TSC_PATH = os.path.join(BIN_PATH, 'tsc.js')
 
 class TypescriptProjectManager(object):
 
@@ -25,6 +26,8 @@ class TypescriptProjectManager(object):
 
     # returns an initializes a project given a certain view
     def service(self, view):
+        if not view: return None
+
         window_id = str(view.window().id())
         if window_id in self.services:
             return self.services[window_id]
@@ -85,6 +88,8 @@ class TypescriptToolService(object):
         return
         self.initialize(file_path)
 
+    def set_build_errors(self, errors):
+        self.build_errors = errors
 
     def on_loaded(self, message):
         # print("on_loaded", self.service_id)
@@ -358,7 +363,7 @@ class TypescriptStartCommand(TextCommand):
 #         # this sucks :)
 #         # in objective-c I'd use a block, so use it!
 
-#     def on_typescript_completions(self, completions):
+#     def on_typescript_completions(self, completions): 
 #         print("-----------------------------------")
 #         print("")
 #         print("")
@@ -369,6 +374,130 @@ class TypescriptStartCommand(TextCommand):
 #             'next_competion_if_showing': True
 #         })
 
+# When you SAVE, do something different
+
+
+class TypescriptBuild(WindowCommand):
+
+    build_errors_by_file = {}
+
+    def __init__(self, window):
+        print("TS BUILD BABY!")
+        WindowCommand.__init__(self, window)
+
+        # output.set_syntax_file("Packages/Syntax/Syntax.tmLanguage")
+        # output.set_syntax_file(os.path.join(os.path.dirname(__file__), "TypescriptBuild.tmLanguage"))
+        # output.run_command('append', {'characters': "Building " + ', '.join(files) + "\n"})
+
+
+    def run(self):
+        view = self.window.active_view()
+        if not view: 
+            return
+
+        # they should be relative to the project
+
+        thread = Thread(target=lambda: self.build(view))
+        thread.daemon = True
+        thread.start()
+
+    def build(self, view):
+
+        window = self.window
+        files = view.settings().get("typescript_main")
+        abs_files = relative_file_paths(window, files)
+
+        # print("Typescript Build:", abs_files)
+        view.set_status("typescript", "TS BUILD [ " + ', '.join(files) + " ]")
+
+        kwargs = {}
+        command = ["/usr/local/bin/node", TSC_PATH, "-m", "commonjs"] + abs_files
+        process = Popen(command, stdin=PIPE, stdout=PIPE, stderr=STDOUT, **kwargs)
+        (stdout, stderr) = process.communicate()
+
+        lines = stdout.decode('UTF-8').split("\n")
+        self.build_errors_by_file = {}
+
+        extra_lines = []
+        total_errors = 0
+
+        self.output_create()
+
+        for line in lines:
+            error = self.parse_error(line)
+            if error:
+                total_errors += 1
+                self.add_build_error(error)
+            elif line:
+                # print("EXTRA LINE BABY", error, line)
+                extra_lines.append(line)
+        
+        project_file = window.project_file_name()
+        
+        if (len(self.build_errors_by_file) == 0) and (len(extra_lines) == 0):
+            # output.run_command('append', {'characters': '[ OK ]'})
+            # output.run_command('close', {})
+            # print("Typescript Build: [OK]")
+            # view.set_status("typescript", "BUILD OK")
+            view.erase_status("typescript")
+            self.output_close()
+            
+        else:
+            # print("OH NO", self.build_errors_by_file, extra_lines)
+            # 
+            self.output_open()
+
+            view.set_status("typescript", "TS ({0}) ERRORS".format(total_errors))
+
+            for line in extra_lines:
+                self.output_append(line)
+        
+            for file, errors in self.build_errors_by_file.items():
+                relative_path = os.path.relpath(file, os.path.dirname(project_file))
+                self.output_append(" ERROR {0} \n".format(relative_path))
+                for error in errors:
+                    self.output_append("  Line {0}: {1}\n".format(error.start.line, error.text))
+                self.output_append("\n")                    
+
+    def add_build_error(self, error):
+        if not error.file in self.build_errors_by_file:
+            self.build_errors_by_file[error.file] = []
+        self.build_errors_by_file[error.file].append(error)
+
+    def errors_for_file(self, file):
+        if not file in self.build_errors_by_file:
+            return []
+        return self.build_errors_by_file[file]
+
+    def parse_error(self, line):
+        # return a string or an error?
+        # if it is a string, just print it out
+        # "/Users/seanhess/projects/angularjs-bootstrap/server/server.ts(10,10): error TS1005: '=' expected."
+        match = re.match('^(.+)\((\d+),(\d+)\): error (\w+): (.+)$', line)
+        if not match: return None
+
+        file = match.group(1)
+        line = int(match.group(2))
+        col = int(match.group(3))
+        text = match.group(5)
+        error = BuildError(file, line, col, text)
+
+        return error
+
+    def output_create(self):
+        # ??? How do you erase one?
+        self.output = self.window.create_output_panel('typescript_build')
+        self.output.settings().set("color_scheme", "Packages/sublime-typescript/TypescriptBuild.tmTheme")         
+        self.output.set_syntax_file("Packages/sublime-typescript/TypescriptBuild.tmLanguage")
+
+    def output_open(self):
+        self.window.run_command("show_panel", {"panel": "output.typescript_build"}) 
+        
+    def output_close(self):
+        self.window.run_command("hide_panel", {"panel": "output.typescript_build"})        
+
+    def output_append(self, characters):
+        self.output.run_command('append', {'characters': characters})
 
 
 class TypescriptEventListener(EventListener):
@@ -376,10 +505,17 @@ class TypescriptEventListener(EventListener):
     def __init__(self):
         self.view_modified_time = 0
 
+    def is_inline_enabled(self, view):
+        # make the default be true
+        if not view.file_name(): return False
+        is_inline_set_false = view.settings().get("typescript_inline") == False
+        # print("CHECKER isSetFalse(", is_inline_set_false, ")", view, view.file_name(), is_typescript(view))
+        return (not is_inline_set_false) and is_typescript(view)
+
     # called whenever a veiw is focused
-    def on_activated_async(self,view):
-        print("on_activated_async", view.file_name())
-        if not is_typescript(view): 
+    def on_activated_async(self,view): 
+        # print("on_activated_async", view.file_name())
+        if not self.is_inline_enabled(view): 
             self.current_view = None
             return
         
@@ -412,7 +548,7 @@ class TypescriptEventListener(EventListener):
 
     # # called on each character sent
     def on_modified_async(self, view):
-        if not is_typescript(view): return
+        if not self.is_inline_enabled(view): return
         # self.mark_view_dirty(view)
 
         # immediately update
@@ -433,7 +569,7 @@ class TypescriptEventListener(EventListener):
         
     # # called a lot when selecting, AND each character
     def on_selection_modified_async(self, view):
-        if not is_typescript(view): return
+        if not self.is_inline_enabled(view): return
 
         service = projects.service(view)
         render_error_status(view, service.errors)
@@ -441,10 +577,11 @@ class TypescriptEventListener(EventListener):
     # def on_post_save_async(self,view):
     #     print("on_post_save_async")
 
-    def on_query_completions(self, view, prefix, locations):
-        if not is_typescript(view): return
 
-        print("******** on_query_completions")
+    def on_query_completions(self, view, prefix, locations):
+        if not self.is_inline_enabled(view): return
+
+        print("on_query_completions")
         service = projects.service(view)
         
         if len(service.completions) == 0: 
@@ -466,6 +603,9 @@ class TypescriptEventListener(EventListener):
             'next_competion_if_showing': True
         })
 
+    def on_post_save_async(self, view):
+        if not is_typescript(view): return
+        sublime.active_window().run_command("typescript_build", {})
                     
     # def on_query_context(self, view, key, operator, operand, match_all):
     #     if key == "typescript":
@@ -473,7 +613,7 @@ class TypescriptEventListener(EventListener):
     #         return is_ts(view)        
 
 
-def is_typescript(view=None):
+def is_typescript(view):
     if view is None:
         view = sublime.active_window().active_view()
     return 'source.ts' in view.scope_name(0)
@@ -523,6 +663,17 @@ def is_completion_valid(completion):
 def is_completion_function(completion):
     return (completion.kind == 'method' or completion.kind == 'function')
 
+def relative_file_path(project_file, file):
+    if not file:
+        return None
+    return os.path.join(os.path.dirname(project_file), file)
+
+def relative_file_paths(window, files):
+    project_file = window.project_file_name()
+    abs_files = list(map(lambda f: relative_file_path(project_file, f), files))
+    return abs_files
+
+
 
 class Completion(object):
     def __init__(self, dict):
@@ -536,11 +687,24 @@ class Completion(object):
 class Error(object):
     def __init__(self, dict):
         self.file = dict['file']
+        self.text = dict['text']
+
         self.start = ErrorPosition(dict['start'])
         self.end = ErrorPosition(dict['end'])
-        self.text = dict['text']
+        
         self.phase = dict['phase']
         self.category = dict['category']
+
+class BuildError(object):
+    def __init__(self, file, line, col, text):
+        self.file = file
+        self.text = text
+
+        self.start = ErrorPosition({'line': line, 'character': col})
+        self.end = ErrorPosition({'line': line, 'character': col+1})
+        
+        self.phase = None
+        self.category = None
 
 class ErrorPosition(object):
     def __init__(self, dict):

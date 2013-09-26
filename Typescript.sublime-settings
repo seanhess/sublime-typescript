@@ -6,7 +6,7 @@
     "auto_complete": true,
     "auto_complete_triggers": [ {"selector": "source.ts", "characters": "."} ],
 
-    // there is an auto_complete_delay! I can use this!
-    // gives me time to fix it :)
-    // "auto_complete_delay": 50,
+    // set to false to disable inline error checking and completions
+    // leaves the build command and syntax highlighting enabled
+    // "typescript_inline": false,
 }
