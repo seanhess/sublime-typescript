@@ -34,13 +34,12 @@ class TypescriptProjectManager(object):
 
         service = TypescriptToolService(window_id)
 
-        # this isn't even currently activated
-        # file = view.settings().get("typescript_root")
-        # if file:
-        #     project_file = view.window().project_file_name()
-        #     file_path = os.path.join(os.path.dirname(project_file), file)
-        #     # TODO save that file_path somewhere for building
-        #     service.initialize(file_path)
+        file = project_main(view)
+        if file:
+            project_file = view.window().project_file_name()
+            file_path = os.path.join(os.path.dirname(project_file), file)
+            # TODO save that file_path somewhere for building
+            service.initialize(file_path)
 
         self.services[window_id] = service
         return service
@@ -78,6 +77,7 @@ class TypescriptToolService(object):
         self.completions = []
         self.tools = None
         self.errors_timer = None
+        self.completions_valid = False
 
     def is_initialized(self):
         return self.tools != None
@@ -138,6 +138,7 @@ class TypescriptToolService(object):
 
     # automatically runs checkerrors
     def update_file(self, view):
+        if not view.file_name(): return
         
         content = view.substr(sublime.Region(0, view.size()))
         lines = content.split('\n')
@@ -150,6 +151,7 @@ class TypescriptToolService(object):
 
     def invalidate_completions(self):
         self.completions = []
+        self.completions_valid = False
         
     def on_updated(self, message): 
         # print("UPDATED", message)
@@ -177,6 +179,7 @@ class TypescriptToolService(object):
                 # print("COMPLETIONS", entries)
                 completions = list(map(lambda c: Completion(c), data['entries']))
                 service.completions = [c for c in completions if is_completion_valid(c)]
+                service.completions_valid = True
                 on_completions(service.completions)
             else:
                 print("!!! Completions")
@@ -421,14 +424,16 @@ class TypescriptBuild(WindowCommand):
     def build(self, view):
 
         window = self.window
-        files = view.settings().get("typescript_main")
-        abs_files = relative_file_paths(window, files)
+        project_file = window.project_file_name()
+
+        file = project_main(view)
+        abs_file = relative_file_path(project_file, file)
 
         # print("Typescript Build:", abs_files)
-        view.set_status("typescript", "TS BUILD [ " + ', '.join(files) + " ]")
+        view.set_status("typescript", "TS BUILD [ " + file + " ]")
 
         kwargs = {}
-        command = ["/usr/local/bin/node", TSC_PATH, "-m", "commonjs"] + abs_files
+        command = ["/usr/local/bin/node", TSC_PATH, "-m", "commonjs"] + [abs_file]
         process = Popen(command, stdin=PIPE, stdout=PIPE, stderr=STDOUT, **kwargs)
         (stdout, stderr) = process.communicate()
 
@@ -456,7 +461,7 @@ class TypescriptBuild(WindowCommand):
                 else:
                     extra_lines.append(line)
         
-        project_file = window.project_file_name()
+        
         
         if (len(self.build_errors_by_file) == 0) and (len(extra_lines) == 0):
             # output.run_command('append', {'characters': '[ OK ]'})
@@ -533,15 +538,6 @@ class TypescriptEventListener(EventListener):
     def __init__(self):
         self.view_modified_time = 0
 
-    def is_inline_enabled(self, view):
-        # make the default be true
-        if not view.file_name(): return False
-        return (not self.is_inline_disabled(view)) and is_typescript(view)
-
-    def is_inline_disabled(self, view):
-        is_inline_set_false = view.settings().get("typescript_inline") == False        
-        return is_inline_set_false
-
     # called whenever a veiw is focused
     def on_activated_async(self,view): 
         # print("on_activated_async", view.file_name())
@@ -552,13 +548,12 @@ class TypescriptEventListener(EventListener):
         self.current_view = view
         service = projects.service(view)
         service.delegate = self
+        
+        render_errors(view, service.errors)
 
-        if self.is_inline_disabled(view):
-            render_errors(view, service.errors)
-
-        else:
-            service.add_file(view)
-            service.check_errors()
+        # you don't need to update the file here, it's already been loaded
+        # service.add_file(view)
+        # service.check_errors()
 
         # print(" - service", service.service_id)
         
@@ -586,16 +581,17 @@ class TypescriptEventListener(EventListener):
     # # called on each character sent
     def on_modified_async(self, view):
         if not is_typescript(view): return
+        if not view.file_name(): return
 
         # self.mark_view_dirty(view)
 
         # immediately update
-        if not self.is_inline_disabled(view):
-            service = projects.service(view)
-            service.delegate = self
-            service.update_file(view)
-            service.check_errors_delay()
-            service.invalidate_completions()
+        # print("on modified async", view.file_name(), view)
+        service = projects.service(view)
+        service.delegate = self
+        # service.update_file(view)
+        # service.check_errors_delay()
+        service.invalidate_completions()
 
         # immediately check completions too?
         # service.load_completions_view(self.current_view)
@@ -607,7 +603,7 @@ class TypescriptEventListener(EventListener):
         
     # # called a lot when selecting, AND each character
     def on_selection_modified_async(self, view):
-        if not self.is_inline_enabled(view): return
+        if not is_typescript(view): return
 
         service = projects.service(view)
         render_error_status(view, service.errors)
@@ -617,24 +613,29 @@ class TypescriptEventListener(EventListener):
 
 
     def on_query_completions(self, view, prefix, locations):
-        if not self.is_inline_enabled(view): return
+        if not is_typescript(view): return
 
         print("on_query_completions")
         service = projects.service(view)
         
-        if len(service.completions) == 0: 
-            print(" - load")
-            self.current_view = view
-            service.load_completions_view(view, self.on_typescript_completions)
-            return []
-
-        else:
+        # if completions is 0! Not the right way to do this!
+        # should be if... if... we haven't updated them
+        if service.completions_valid:
             print(" - render " + str(len(service.completions)))
             completions = list(map(completion_item, service.completions))
-            return completions
+            return (completions)
+
+        else:
+            print(" - load")
+            self.current_view = view
+            service.completions_valid = False
+            service.update_file(view)
+            service.load_completions_view(view, self.on_typescript_completions)
+            return ([], sublime.INHIBIT_WORD_COMPLETIONS | sublime.INHIBIT_EXPLICIT_COMPLETIONS)
+
 
     def on_typescript_completions(self, completions):
-        self.current_view.run_command('hide_auto_complete')
+        # self.current_view.run_command('hide_auto_complete')
         self.current_view.run_command('auto_complete',{
             'disable_auto_insert': True,
             'api_completions_only': True,
@@ -643,13 +644,15 @@ class TypescriptEventListener(EventListener):
 
     def on_post_save_async(self, view):
         if not is_typescript(view): return
+
+        print("SAVE", view, project_main(view), view.file_name())
         sublime.active_window().run_command("typescript_build", {})
                     
     # def on_query_context(self, view, key, operator, operand, match_all):
     #     if key == "typescript":
     #         view = sublime.active_window().active_view()
     #         return is_ts(view)        
-
+ 
 
 def is_typescript(view):
     if view is None:
@@ -711,6 +714,8 @@ def relative_file_paths(window, files):
     abs_files = list(map(lambda f: relative_file_path(project_file, f), files))
     return abs_files
 
+def project_main(view):
+    return view.window().project_data()["typescript_main"]
 
 
 class Completion(object):
