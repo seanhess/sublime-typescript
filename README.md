@@ -1,7 +1,7 @@
 Sublime-Typescript
 ==================
 
-THIS PLUGIN IN NOT MAINTAINED. I recommend using https://github.com/Railk/T3S
+THIS PLUGIN IS NOT MAINTAINED. I recommend using https://github.com/Railk/T3S
 
 A Sublime Text plugin for the Typescript language.
 
